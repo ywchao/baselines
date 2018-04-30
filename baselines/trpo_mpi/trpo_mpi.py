@@ -2,13 +2,14 @@ from baselines.common import explained_variance, zipsame, dataset
 from baselines import logger
 import baselines.common.tf_util as U
 import tensorflow as tf, numpy as np
-import time
+import time, os
 from baselines.common import colorize
 from mpi4py import MPI
 from collections import deque
 from baselines.common.mpi_adam import MpiAdam
 from baselines.common.cg import cg
 from contextlib import contextmanager
+from baselines.gail.statistics import stats
 
 def traj_segment_generator(pi, env, horizon, stochastic):
     # Initialize state variables
@@ -88,7 +89,8 @@ def learn(env, policy_fn, *,
         vf_stepsize=3e-4,
         vf_iters =3,
         max_timesteps=0, max_episodes=0, max_iters=0,  # time constraint
-        callback=None
+        callback=None,
+        save_per_iter=100, ckpt_dir=None, log_dir=None
         ):
     nworkers = MPI.COMM_WORLD.Get_size()
     rank = MPI.COMM_WORLD.Get_rank()
@@ -165,6 +167,7 @@ def learn(env, policy_fn, *,
         out /= nworkers
         return out
 
+    writer = U.FileWriter(log_dir)
     U.initialize()
     th_init = get_flat()
     MPI.COMM_WORLD.Bcast(th_init, root=0)
@@ -185,6 +188,9 @@ def learn(env, policy_fn, *,
 
     assert sum([max_iters>0, max_timesteps>0, max_episodes>0])==1
 
+    loss_stats = stats(loss_names)
+    ep_stats = stats(["Rewards", "Episode_length"])
+
     while True:
         if callback: callback(locals(), globals())
         if max_timesteps and timesteps_so_far >= max_timesteps:
@@ -193,6 +199,11 @@ def learn(env, policy_fn, *,
             break
         elif max_iters and iters_so_far >= max_iters:
             break
+
+        # Save model
+        if rank == 0 and iters_so_far % save_per_iter == 0 and ckpt_dir is not None:
+            U.save_state(os.path.join(ckpt_dir,'model.ckpt'), counter=iters_so_far)
+
         logger.log("********** Iteration %i ************"%iters_so_far)
 
         with timed("sampling"):
@@ -286,6 +297,10 @@ def learn(env, policy_fn, *,
 
         if rank==0:
             logger.dump_tabular()
+            if iters_so_far % 20 == 0:
+                loss_stats.add_all_summary(writer, meanlosses, iters_so_far)
+                ep_stats.add_all_summary(
+                    writer, [np.mean(rewbuffer), np.mean(lenbuffer)], iters_so_far)
 
 def flatten_lists(listoflists):
     return [el for list_ in listoflists for el in list_]

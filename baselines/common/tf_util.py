@@ -48,6 +48,10 @@ def huber_loss(x, delta=1.0):
 # Global session
 # ================================================================
 
+def get_session():
+    """Returns recently made Tensorflow session"""
+    return tf.get_default_session()
+
 def make_session(num_cpu=None, make_default=False):
     """Returns a session that will use <num_cpu> CPU's only"""
     if num_cpu is None:
@@ -79,6 +83,32 @@ def initialize():
     new_variables = set(tf.global_variables()) - ALREADY_INITIALIZED
     tf.get_default_session().run(tf.variables_initializer(new_variables))
     ALREADY_INITIALIZED.update(new_variables)
+
+# ================================================================
+# Save tensorflow summary
+# ================================================================
+def FileWriter(dir_path):
+    os.makedirs(dir_path, exist_ok=True)
+    return tf.summary.FileWriter(dir_path, get_session().graph)
+
+
+# ================================================================
+# Saving variables
+# ================================================================
+
+def load_state(fname, var_list=None):
+    if var_list is not None: saver = tf.train.Saver(var_list=var_list)
+    else: saver = tf.train.Saver()
+    saver.restore(get_session(), fname)
+
+def save_state(fname, var_list=None, counter=None):
+
+    os.makedirs(os.path.dirname(fname), exist_ok=True)
+    if var_list is not None: saver = tf.train.Saver(var_list=var_list)
+    else: saver = tf.train.Saver()
+
+    if counter is not None: saver.save(get_session(), fname, global_step=counter)
+    else: saver.save(get_session(), fname)
 
 # ================================================================
 # Model components
