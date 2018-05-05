@@ -11,6 +11,44 @@ from baselines.common.cg import cg
 from contextlib import contextmanager
 from baselines.gail.statistics import stats
 
+def traj_episode_generator(pi, env, horizon, stochastic):
+    # Initialize state variables
+    t = 0
+    ac = env.action_space.sample() # not used, just so we have the datatype
+    new = True # marks if we're on first timestep of an episode
+    ob = env.reset()
+    cur_ep_ret = 0 # return in current episode
+    cur_ep_len = 0 # len of current episode
+
+    # Initialize history arrays
+    obs = []; rews = []; news = []; acs = []
+
+    while True:
+        prevac = ac
+        ac, vpred = pi.act(stochastic, ob)
+        obs.append(ob)
+        news.append(new)
+        acs.append(ac)
+        ob, rew, new, _ = env.step(ac)
+        rews.append(rew)
+
+        cur_ep_ret += rew
+        cur_ep_len += 1
+        if t > 0 and (new or t % horizon == 0):
+            # convert list into numpy array
+            obs = np.array(obs)
+            rews = np.array(rews)
+            news = np.array(news)
+            acs = np.array(acs)
+            yield {"ob":obs, "rew":rews, "new":news, "ac":acs,
+                    "ep_ret":cur_ep_ret, "ep_len":cur_ep_len}
+            ob = env.reset()
+            cur_ep_ret = 0; cur_ep_len = 0; t = 0
+
+            # Initialize history arrays
+            obs = []; rews = []; news = []; acs = []
+        t += 1
+
 def traj_segment_generator(pi, env, horizon, stochastic):
     # Initialize state variables
     t = 0
@@ -304,3 +342,42 @@ def learn(env, policy_fn, *,
 
 def flatten_lists(listoflists):
     return [el for list_ in listoflists for el in list_]
+
+def sample(env, policy_fn, timesteps_per_batch, load_model_path, sample_stochastic, max_sample_traj, log_dir):
+    ob_space = env.observation_space
+    ac_space = env.action_space
+    pi = policy_fn("pi", ob_space, ac_space) # Construct network for new policy
+
+    traj_gen = traj_episode_generator(pi, env, timesteps_per_batch, stochastic=sample_stochastic)
+
+    max_timesteps = min(timesteps_per_batch, env.spec.timestep_limit)
+
+    assert load_model_path is not None
+    U.load_state(load_model_path)
+    sample_trajs = {"obs": [], "acs": [], "rews": [], "ep_rets": []}
+    for iters_so_far in range(max_sample_traj):
+        logger.log("********** Iteration %i ************"%iters_so_far)
+        while True:
+            traj = traj_gen.__next__()
+            ob, new, ep_ret, ac, rew, ep_len = traj['ob'], traj['new'], traj['ep_ret'], traj['ac'], traj['rew'], traj['ep_len']
+            # Break only if reaching the maximum timesteps. This can be
+            # problematic if the expert is not trained well enough.
+            if ob.shape[0] == max_timesteps:
+                break
+        logger.record_tabular("ep_ret", ep_ret)
+        logger.record_tabular("ep_len", ep_len)
+        logger.record_tabular("immediate reward", np.mean(rew))
+        if MPI.COMM_WORLD.Get_rank()==0:
+            logger.dump_tabular()
+        sample_trajs["obs"].append(ob)
+        sample_trajs["acs"].append(ac)
+        sample_trajs["rews"].append(rew)
+        sample_trajs["ep_rets"].append(ep_ret)
+    sample_trajs = {k: np.array(v) for k, v in sample_trajs.items()}
+
+    logger.log("Average total return: %f"%(sum(sample_trajs["ep_rets"])/len(sample_trajs["ep_rets"])))
+    if sample_stochastic:
+        save_name = 'stochastic'
+    else:
+        save_name = 'deterministic'
+    np.savez(os.path.join(log_dir, save_name), **sample_trajs)
