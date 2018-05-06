@@ -105,7 +105,7 @@ def add_vtarg_and_adv(seg, gamma, lam):
 def learn(env, policy_func, reward_giver, expert_dataset, rank,
           pretrained, pretrained_weight, *,
           g_step, d_step, entcoeff, save_per_iter,
-          ckpt_dir, log_dir, timesteps_per_batch, task_name,
+          ckpt_dir, log_dir, timesteps_per_batch,
           gamma, lam,
           max_kl, cg_iters, cg_damping=1e-2,
           vf_stepsize=3e-4, d_stepsize=3e-4, vf_iters=3,
@@ -190,6 +190,7 @@ def learn(env, policy_func, reward_giver, expert_dataset, rank,
         out /= nworkers
         return out
 
+    writer = U.FileWriter(log_dir)
     U.initialize()
     th_init = get_flat()
     MPI.COMM_WORLD.Bcast(th_init, root=0)
@@ -231,10 +232,10 @@ def learn(env, policy_func, reward_giver, expert_dataset, rank,
 
         # Save model
         if rank == 0 and iters_so_far % save_per_iter == 0 and ckpt_dir is not None:
-            fname = os.path.join(ckpt_dir, task_name)
+            fname = os.path.join(ckpt_dir, 'model.ckpt')
             os.makedirs(os.path.dirname(fname), exist_ok=True)
             saver = tf.train.Saver()
-            saver.save(tf.get_default_session(), fname)
+            saver.save(tf.get_default_session(), fname, global_step=iters_so_far)
 
         logger.log("********** Iteration %i ************" % iters_so_far)
 
@@ -348,6 +349,13 @@ def learn(env, policy_func, reward_giver, expert_dataset, rank,
 
         if rank == 0:
             logger.dump_tabular()
+            if iters_so_far % 20 == 0:
+                g_loss_stats.add_all_summary(writer, g_losses, iters_so_far)
+                d_loss_stats.add_all_summary(writer, np.mean(d_losses, axis=0), iters_so_far)
+                ep_stats.add_all_summary(
+                    writer,
+                    [np.mean(true_rewbuffer), np.mean(rewbuffer), np.mean(lenbuffer)],
+                    iters_so_far)
 
 
 def flatten_lists(listoflists):

@@ -19,14 +19,18 @@ from baselines import logger
 from baselines.gail.dataset.mujoco_dset import Mujoco_Dset
 from baselines.gail.adversary import TransitionClassifier
 
+try:
+    import roboschool
+except ImportError as e:
+    print("{}. You will not be able to run the experiments that require Roboschool envs.".format(e))
+
 
 def argsparser():
     parser = argparse.ArgumentParser("Tensorflow Implementation of GAIL")
     parser.add_argument('--env_id', help='environment ID', default='Hopper-v2')
     parser.add_argument('--seed', help='RNG seed', type=int, default=0)
     parser.add_argument('--expert_path', type=str, default='data/deterministic.trpo.Hopper.0.00.npz')
-    parser.add_argument('--checkpoint_dir', help='the directory to save model', default='checkpoint')
-    parser.add_argument('--log_dir', help='the directory to save log file', default='log')
+    parser.add_argument('--out_base', help='the base directory to save model and log file', default='output/gail')
     parser.add_argument('--load_model_path', help='if provided, load the model', type=str, default=None)
     # Task
     parser.add_argument('--task', type=str, choices=['train', 'evaluate', 'sample'], default='train')
@@ -65,6 +69,7 @@ def get_task_name(args):
     task_name = task_name + ".g_step_" + str(args.g_step) + ".d_step_" + str(args.d_step) + \
         ".policy_entcoeff_" + str(args.policy_entcoeff) + ".adversary_entcoeff_" + str(args.adversary_entcoeff)
     task_name += ".seed_" + str(args.seed)
+    task_name += ".num_timesteps_" + "{0:.2e}".format(args.num_timesteps)
     return task_name
 
 
@@ -81,8 +86,9 @@ def main(args):
     env.seed(args.seed)
     gym.logger.setLevel(logging.WARN)
     task_name = get_task_name(args)
-    args.checkpoint_dir = osp.join(args.checkpoint_dir, task_name)
-    args.log_dir = osp.join(args.log_dir, task_name)
+    out_dir = osp.join(args.out_base, task_name)
+    args.log_dir = out_dir
+    args.checkpoint_dir = osp.join(out_dir, 'checkpoints')
 
     if args.task == 'train':
         dataset = Mujoco_Dset(expert_path=args.expert_path, traj_limitation=args.traj_limitation)
@@ -101,8 +107,7 @@ def main(args):
               args.checkpoint_dir,
               args.log_dir,
               args.pretrained,
-              args.BC_max_iter,
-              task_name
+              args.BC_max_iter
               )
     elif args.task == 'evaluate':
         runner(env,
@@ -120,7 +125,7 @@ def main(args):
 
 def train(env, seed, policy_fn, reward_giver, dataset, algo,
           g_step, d_step, policy_entcoeff, num_timesteps, save_per_iter,
-          checkpoint_dir, log_dir, pretrained, BC_max_iter, task_name=None):
+          checkpoint_dir, log_dir, pretrained, BC_max_iter):
 
     pretrained_weight = None
     if pretrained and (BC_max_iter > 0):
@@ -148,8 +153,7 @@ def train(env, seed, policy_fn, reward_giver, dataset, algo,
                        timesteps_per_batch=1024,
                        max_kl=0.01, cg_iters=10, cg_damping=0.1,
                        gamma=0.995, lam=0.97,
-                       vf_iters=5, vf_stepsize=1e-3,
-                       task_name=task_name)
+                       vf_iters=5, vf_stepsize=1e-3)
     else:
         raise NotImplementedError
 
