@@ -56,6 +56,8 @@ def argsparser():
     # Behavior Cloning
     boolean_flag(parser, 'pretrained', default=False, help='Use BC to pretrain')
     parser.add_argument('--BC_max_iter', help='Max iteration for training BC', type=int, default=1e4)
+    # Demonstration Configuration
+    boolean_flag(parser, 'obs_only', default=False, help='use only observation as demonstration')
     return parser.parse_args()
 
 
@@ -63,6 +65,8 @@ def get_task_name(args):
     task_name = args.algo + "_gail."
     if args.pretrained:
         task_name += "with_pretrained."
+    if args.obs_only:
+        task_name += "obs_only."
     if args.traj_limitation != np.inf:
         task_name += "transition_limitation_%d." % args.traj_limitation
     task_name += args.env_id.split("-")[0]
@@ -91,8 +95,13 @@ def main(args):
     args.checkpoint_dir = osp.join(out_dir, 'checkpoints')
 
     if args.task == 'train':
-        dataset = Mujoco_Dset(expert_path=args.expert_path, traj_limitation=args.traj_limitation)
-        reward_giver = TransitionClassifier(env, args.adversary_hidden_size, entcoeff=args.adversary_entcoeff)
+        dataset = Mujoco_Dset(expert_path=args.expert_path,
+                              traj_limitation=args.traj_limitation,
+                              obs_only=args.obs_only)
+        reward_giver = TransitionClassifier(env,
+                                            args.adversary_hidden_size,
+                                            entcoeff=args.adversary_entcoeff,
+                                            obs_only=args.obs_only)
         train(env,
               args.seed,
               policy_fn,
@@ -107,7 +116,8 @@ def main(args):
               args.checkpoint_dir,
               args.log_dir,
               args.pretrained,
-              args.BC_max_iter
+              args.BC_max_iter,
+              args.obs_only
               )
     elif args.task == 'evaluate':
         runner(env,
@@ -125,7 +135,7 @@ def main(args):
 
 def train(env, seed, policy_fn, reward_giver, dataset, algo,
           g_step, d_step, policy_entcoeff, num_timesteps, save_per_iter,
-          checkpoint_dir, log_dir, pretrained, BC_max_iter):
+          checkpoint_dir, log_dir, pretrained, BC_max_iter, obs_only):
 
     pretrained_weight = None
     if pretrained and (BC_max_iter > 0):
@@ -143,6 +153,10 @@ def train(env, seed, policy_fn, reward_giver, dataset, algo,
         workerseed = seed + 10000 * MPI.COMM_WORLD.Get_rank()
         set_global_seeds(workerseed)
         env.seed(workerseed)
+        if obs_only:
+            timesteps_per_batch = 1000
+        else:
+            timesteps_per_batch = 1024
         trpo_mpi.learn(env, policy_fn, reward_giver, dataset, rank,
                        pretrained=pretrained, pretrained_weight=pretrained_weight,
                        g_step=g_step, d_step=d_step,
@@ -150,10 +164,11 @@ def train(env, seed, policy_fn, reward_giver, dataset, algo,
                        max_timesteps=num_timesteps,
                        ckpt_dir=checkpoint_dir, log_dir=log_dir,
                        save_per_iter=save_per_iter,
-                       timesteps_per_batch=1024,
+                       timesteps_per_batch=timesteps_per_batch,
                        max_kl=0.01, cg_iters=10, cg_damping=0.1,
                        gamma=0.995, lam=0.97,
-                       vf_iters=5, vf_stepsize=1e-3)
+                       vf_iters=5, vf_stepsize=1e-3,
+                       obs_only=obs_only)
     else:
         raise NotImplementedError
 

@@ -11,6 +11,11 @@ from baselines.common.cg import cg
 from contextlib import contextmanager
 from baselines.gail.statistics import stats
 
+try:
+    from roboschool.gym_mujoco_walkers import RoboschoolHumanoid
+except ImportError as e:
+    print("{}. You will not be able to run the experiments that require Roboschool envs.".format(e))
+
 def traj_episode_generator(pi, env, horizon, stochastic):
     # Initialize state variables
     t = 0
@@ -21,7 +26,7 @@ def traj_episode_generator(pi, env, horizon, stochastic):
     cur_ep_len = 0 # len of current episode
 
     # Initialize history arrays
-    obs = []; rews = []; news = []; acs = []
+    obs = []; rews = []; news = []; acs = []; qpos = []
 
     while True:
         prevac = ac
@@ -29,6 +34,16 @@ def traj_episode_generator(pi, env, horizon, stochastic):
         obs.append(ob)
         news.append(new)
         acs.append(ac)
+        if 'RoboschoolHumanoid' in globals() and isinstance(env.env.env, RoboschoolHumanoid):
+            jnt = [q for j in env.env.env.ordered_joints for q in j.current_position()]
+            xyz = list(env.env.env.robot_body.pose().xyz())
+            rpy = list(env.env.env.robot_body.pose().rpy())
+            vel = list(env.env.env.robot_body.speed())
+            feet_contact = list(ob[-2:]) # feet_contact is updated after calc_state()
+            qpos.append(np.array(jnt + xyz + rpy + vel + feet_contact))
+        else:
+            # TODO: handle other envs.
+            raise NotImplementedError
         ob, rew, new, _ = env.step(ac)
         rews.append(rew)
 
@@ -40,13 +55,14 @@ def traj_episode_generator(pi, env, horizon, stochastic):
             rews = np.array(rews)
             news = np.array(news)
             acs = np.array(acs)
-            yield {"ob":obs, "rew":rews, "new":news, "ac":acs,
+            qpos = np.array(qpos)
+            yield {"ob":obs, "rew":rews, "new":news, "ac":acs, "qpos":qpos,
                     "ep_ret":cur_ep_ret, "ep_len":cur_ep_len}
             ob = env.reset()
             cur_ep_ret = 0; cur_ep_len = 0; t = 0
 
             # Initialize history arrays
-            obs = []; rews = []; news = []; acs = []
+            obs = []; rews = []; news = []; acs = []; qpos = []
         t += 1
 
 def traj_segment_generator(pi, env, horizon, stochastic):
@@ -354,12 +370,14 @@ def sample(env, policy_fn, timesteps_per_batch, load_model_path, sample_stochast
 
     assert load_model_path is not None
     U.load_state(load_model_path)
-    sample_trajs = {"obs": [], "acs": [], "rews": [], "ep_rets": []}
+    # pos will be non-empty only for Roboschool Mujoco envs
+    sample_trajs = {"obs": [], "acs": [], "rews": [], "ep_rets": [], "qpos": []}
     for iters_so_far in range(max_sample_traj):
         logger.log("********** Iteration %i ************"%iters_so_far)
         while True:
             traj = traj_gen.__next__()
-            ob, new, ep_ret, ac, rew, ep_len = traj['ob'], traj['new'], traj['ep_ret'], traj['ac'], traj['rew'], traj['ep_len']
+            ob, new, ep_ret, ac, rew, ep_len, qpos = (
+                traj['ob'], traj['new'], traj['ep_ret'], traj['ac'], traj['rew'], traj['ep_len'], traj['qpos'])
             # Break only if reaching the maximum timesteps. This can be
             # problematic if the expert is not trained well enough.
             if ob.shape[0] == max_timesteps:
@@ -373,6 +391,7 @@ def sample(env, policy_fn, timesteps_per_batch, load_model_path, sample_stochast
         sample_trajs["acs"].append(ac)
         sample_trajs["rews"].append(rew)
         sample_trajs["ep_rets"].append(ep_ret)
+        sample_trajs["qpos"].append(qpos)
     sample_trajs = {k: np.array(v) for k, v in sample_trajs.items()}
 
     logger.log("Average total return: %f"%(sum(sample_trajs["ep_rets"])/len(sample_trajs["ep_rets"])))
