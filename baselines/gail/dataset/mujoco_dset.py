@@ -57,6 +57,13 @@ class Mujoco_Dset(object):
             self.obs = traj_data['obs'][:traj_limitation]
             self.qpos = traj_data['qpos'][:traj_limitation]
             self.num_transition = sum([len(i) for i in self.obs])
+            # TODO: Ensure a pre-fixed minimum `num_transition`. Should change
+            # according to `timesteps_per_batch` in run_mujoco.py. 
+            if self.num_transition < 1000:
+                factor = int(np.ceil(1000 / self.num_transition))
+                self.obs = np.tile(self.obs, factor)
+                self.qpos = np.tile(self.qpos, factor)
+                self.num_transition = sum([len(i) for i in self.obs])
         else:
             obs = traj_data['obs'][:traj_limitation]
             acs = traj_data['acs'][:traj_limitation]

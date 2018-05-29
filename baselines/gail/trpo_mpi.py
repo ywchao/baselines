@@ -122,11 +122,12 @@ def traj_segment_generator(pi, env, reward_giver, horizon, stochastic, expert_da
             ob = env.reset()
         t += 1
 
-        if expert_dataset is not None and t % horizon == 0:
-            obs_expert, qpos = expert_dataset.get_next_batch(horizon)
-        if expert_dataset is not None and new:
-            ob = env_reset_expert(env, qpos, t % horizon)
-            assert np.sum(obs_expert[t % horizon] - ob) < _ASSERT_TH
+        if expert_dataset is not None:
+            if t % horizon == 0:
+                obs_expert, qpos = expert_dataset.get_next_batch(horizon)
+            if new:
+                ob = env_reset_expert(env, qpos, t % horizon)
+                assert np.sum(obs_expert[t % horizon] - ob) < _ASSERT_TH
 
 
 def add_vtarg_and_adv(seg, gamma, lam):

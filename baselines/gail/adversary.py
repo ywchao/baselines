@@ -24,7 +24,7 @@ class TransitionClassifier(object):
         self.observation_shape = env.observation_space.shape
         self.actions_shape = env.action_space.shape
         if self.obs_only:
-            self.input_shape = self.actions_shape
+            self.input_shape = self.observation_shape
         else:
             self.input_shape = tuple([o+a for o, a in zip(self.observation_shape, self.actions_shape)])
         self.num_actions = env.action_space.shape[0]
