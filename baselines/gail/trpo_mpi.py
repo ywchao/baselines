@@ -59,7 +59,7 @@ def traj_segment_generator(pi, env, reward_giver, horizon, stochastic, expert_da
         env.allow_early_resets = True
         obs_expert, qpos = expert_dataset.get_next_batch(horizon)
         ob = env_reset_expert(env, qpos, 0)
-        assert np.sum(obs_expert[0] - ob) < _ASSERT_TH
+        assert np.linalg.norm(obs_expert[0] - ob) < _ASSERT_TH
 
     cur_ep_ret = 0
     cur_ep_len = 0
@@ -127,7 +127,7 @@ def traj_segment_generator(pi, env, reward_giver, horizon, stochastic, expert_da
                 obs_expert, qpos = expert_dataset.get_next_batch(horizon)
             if new:
                 ob = env_reset_expert(env, qpos, t % horizon)
-                assert np.sum(obs_expert[t % horizon] - ob) < _ASSERT_TH
+                assert np.linalg.norm(obs_expert[t % horizon] - ob) < _ASSERT_TH
 
 
 def add_vtarg_and_adv(seg, gamma, lam):

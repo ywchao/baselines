@@ -21,11 +21,13 @@ class Dset(object):
 
     def init_pointer(self):
         self.pointer = 0
+        self._inputs = self.inputs
+        self._labels = self.labels
         if self.randomize:
             idx = np.arange(len(self.inputs))
             np.random.shuffle(idx)
-            self._inputs = self.inputs[idx]
-            self._labels = self.labels[idx]
+            self._inputs = self._inputs[idx]
+            self._labels = self._labels[idx]
         if not self.flattened:
             self._inputs = flatten(self._inputs)
             self._labels = flatten(self._labels)
@@ -58,7 +60,7 @@ class Mujoco_Dset(object):
             self.qpos = traj_data['qpos'][:traj_limitation]
             self.num_transition = sum([len(i) for i in self.obs])
             # TODO: Ensure a pre-fixed minimum `num_transition`. Should change
-            # according to `timesteps_per_batch` in run_mujoco.py. 
+            # according to `timesteps_per_batch` in run_mujoco.py.
             if self.num_transition < 1000:
                 factor = int(np.ceil(1000 / self.num_transition))
                 self.obs = np.tile(self.obs, factor)
