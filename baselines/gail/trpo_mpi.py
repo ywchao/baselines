@@ -19,11 +19,21 @@ from baselines.common.mpi_adam import MpiAdam
 from baselines.common.cg import cg
 from baselines.gail.statistics import stats
 
+from baselines.bench import Monitor
+
 try:
     from roboschool.gym_mujoco_walkers import RoboschoolHumanoid
     from roboschool.scene_abstract import cpp_household
 except ImportError as e:
     print("{}. You will not be able to run the experiments that require Roboschool envs.".format(e))
+
+try:
+    os.environ['DISABLE_MUJOCO_RENDERING'] = '1'
+    from dm_control.rl.control import Environment
+    from dm_control.suite.humanoid_CMU import HumanoidCMU
+    from baselines.common.dm_control_util import get_humanoid_cmu_obs
+except ImportError as e:
+    print("{}. You will not be able to run the experiments that require dm_control envs.".format(e))
 
 _ASSERT_TH = 1e-2
 
@@ -31,7 +41,7 @@ _ASSERT_TH = 1e-2
 def traj_segment_generator(pi, env, reward_giver, horizon, stochastic, expert_dataset=None):
 
     def env_reset_expert(env, qpos, t):
-        if 'RoboschoolHumanoid' in globals() and isinstance(env.env.env, RoboschoolHumanoid):
+        if isinstance(env, Monitor) and 'RoboschoolHumanoid' in globals() and isinstance(env.env.env, RoboschoolHumanoid):
             # Make sure to run env.reset beforehand to add attribute `orderer_joints`
             for j, joint in enumerate(env.env.env.ordered_joints):
                 joint.reset_current_position(qpos[t, 2*j], qpos[t, 2*j+1])
@@ -43,20 +53,33 @@ def traj_segment_generator(pi, env, reward_giver, horizon, stochastic, expert_da
                 r.query_position()
             env.env.env.feet_contact[:] = qpos[t, -2:]
             return env.env.env.calc_state()
+        elif 'HumanoidCMU' in globals() and isinstance(env, Environment) and isinstance(env.task, HumanoidCMU):
+            with env.physics.reset_context():
+                env.physics.data.qpos[:] = qpos[t, :63]
+                env.physics.data.qvel[:] = qpos[t, 63:]
+            return get_humanoid_cmu_obs(env)
         else:
             # TODO: handle other envs.
             raise NotImplementedError
 
     # Initialize state variables
     t = 0
-    ac = env.action_space.sample()
     new = True
     rew = 0.0
     true_rew = 0.0
-    ob = env.reset()
     obs_expert = None
+    assert (isinstance(env, Monitor) or
+            ('HumanoidCMU' in globals() and isinstance(env, Environment) and isinstance(env.task, HumanoidCMU)))
+    if isinstance(env, Monitor):
+        ac = env.action_space.sample()
+        ob = env.reset()
+    if 'HumanoidCMU' in globals() and isinstance(env, Environment) and isinstance(env.task, HumanoidCMU):
+        ac = np.zeros(env.action_spec().shape)
+        env.reset()
+        ob = get_humanoid_cmu_obs(env)
     if expert_dataset is not None:
-        env.allow_early_resets = True
+        if isinstance(env, Monitor):
+            env.allow_early_resets = True
         obs_expert, qpos = expert_dataset.get_next_batch(horizon)
         ob = env_reset_expert(env, qpos, 0)
         assert np.linalg.norm(obs_expert[0] - ob) < _ASSERT_TH
@@ -105,7 +128,16 @@ def traj_segment_generator(pi, env, reward_giver, horizon, stochastic, expert_da
             rew = reward_giver.get_reward(ob)
         else:
             rew = reward_giver.get_reward(ob, ac)
-        ob, true_rew, new, _ = env.step(ac)
+        if isinstance(env, Monitor):
+            ob, true_rew, new, _ = env.step(ac)
+        if 'HumanoidCMU' in globals() and isinstance(env, Environment) and isinstance(env.task, HumanoidCMU):
+            step_type, true_rew, _, ob = env.step(ac)
+            if new:
+                new = False
+            if ob['head_height'] < 1.0 or step_type == 2:
+                new = True
+            ob = get_humanoid_cmu_obs(env)
+            # assert true_rew is not None
         rews[i] = rew
         true_rews[i] = true_rew
 
@@ -119,7 +151,11 @@ def traj_segment_generator(pi, env, reward_giver, horizon, stochastic, expert_da
             cur_ep_ret = 0
             cur_ep_true_ret = 0
             cur_ep_len = 0
-            ob = env.reset()
+            if isinstance(env, Monitor):
+                ob = env.reset()
+            if 'HumanoidCMU' in globals() and isinstance(env, Environment) and isinstance(env.task, HumanoidCMU):
+                env.reset()
+                ob = get_humanoid_cmu_obs(env)
         t += 1
 
         if expert_dataset is not None:
@@ -160,8 +196,18 @@ def learn(env, policy_func, reward_giver, expert_dataset, rank,
     np.set_printoptions(precision=3)
     # Setup losses and stuff
     # ----------------------------------------
-    ob_space = env.observation_space
-    ac_space = env.action_space
+    if isinstance(env, Monitor):
+        ob_space = env.observation_space
+        ac_space = env.action_space
+    elif 'HumanoidCMU' in globals() and isinstance(env, Environment) and isinstance(env.task, HumanoidCMU):
+        from gym import spaces
+        obs_dim = get_humanoid_cmu_obs(env).shape
+        ob_space = spaces.Box(np.inf*np.ones(obs_dim)*(-1),
+                              np.inf*np.ones(obs_dim))
+        ac_space = spaces.Box(env.action_spec().minimum,
+                              env.action_spec().maximum)
+    else:
+        raise NotImplementedError
     pi = policy_func("pi", ob_space, ac_space, reuse=(pretrained_weight != None))
     oldpi = policy_func("oldpi", ob_space, ac_space)
     atarg = tf.placeholder(dtype=tf.float32, shape=[None])  # Target advantage function (if applicable)

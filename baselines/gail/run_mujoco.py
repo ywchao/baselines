@@ -24,6 +24,14 @@ try:
 except ImportError as e:
     print("{}. You will not be able to run the experiments that require Roboschool envs.".format(e))
 
+try:
+    import os
+    os.environ['DISABLE_MUJOCO_RENDERING'] = '1'
+    from dm_control.suite import humanoid_CMU
+    from dm_control.rl.control import Environment
+except ImportError as e:
+    print("{}. You will not be able to run the experiments that require dm_control envs.".format(e))
+
 
 def argsparser():
     parser = argparse.ArgumentParser("Tensorflow Implementation of GAIL")
@@ -80,14 +88,19 @@ def get_task_name(args):
 def main(args):
     U.make_session(num_cpu=1).__enter__()
     set_global_seeds(args.seed)
-    env = gym.make(args.env_id)
+    if args.env_id == 'humanoid_CMU_run':
+        assert args.obs_only is True
+        env = humanoid_CMU.run()
+        env.task.random.seed(args.seed)
+    else:
+        env = gym.make(args.env_id)
+        env = bench.Monitor(env, logger.get_dir() and
+                            osp.join(logger.get_dir(), "monitor.json"))
+        env.seed(args.seed)
 
     def policy_fn(name, ob_space, ac_space, reuse=False):
         return mlp_policy.MlpPolicy(name=name, ob_space=ob_space, ac_space=ac_space,
                                     reuse=reuse, hid_size=args.policy_hidden_size, num_hid_layers=2)
-    env = bench.Monitor(env, logger.get_dir() and
-                        osp.join(logger.get_dir(), "monitor.json"))
-    env.seed(args.seed)
     gym.logger.setLevel(logging.WARN)
     task_name = get_task_name(args)
     out_dir = osp.join(args.out_base, task_name)
@@ -152,7 +165,12 @@ def train(env, seed, policy_fn, reward_giver, dataset, algo,
             logger.set_level(logger.DISABLED)
         workerseed = seed + 10000 * MPI.COMM_WORLD.Get_rank()
         set_global_seeds(workerseed)
-        env.seed(workerseed)
+        if isinstance(env, bench.Monitor):
+            env.seed(workerseed)
+        elif 'Environment' in globals() and isinstance(env, Environment):
+            env.task.random.seed(workerseed)
+        else:
+            raise NotImplementedError
         if obs_only:
             timesteps_per_batch = 1000
         else:

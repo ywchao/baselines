@@ -8,6 +8,17 @@ import numpy as np
 from baselines.common.mpi_running_mean_std import RunningMeanStd
 from baselines.common import tf_util as U
 
+from baselines.bench import Monitor
+
+try:
+    import os
+    os.environ['DISABLE_MUJOCO_RENDERING'] = '1'
+    from dm_control.rl.control import Environment
+    from dm_control.suite.humanoid_CMU import HumanoidCMU
+    from baselines.common.dm_control_util import get_humanoid_cmu_obs
+except ImportError as e:
+    print("{}. You will not be able to run the experiments that require dm_control envs.".format(e))
+
 def logsigmoid(a):
     '''Equivalent to tf.log(tf.sigmoid(a))'''
     return -tf.nn.softplus(-a)
@@ -21,13 +32,19 @@ class TransitionClassifier(object):
     def __init__(self, env, hidden_size, entcoeff=0.001, lr_rate=1e-3, scope="adversary", obs_only=False):
         self.scope = scope
         self.obs_only = obs_only
-        self.observation_shape = env.observation_space.shape
-        self.actions_shape = env.action_space.shape
+        if isinstance(env, Monitor):
+            self.observation_shape = env.observation_space.shape
+            self.actions_shape = env.action_space.shape
+        elif 'HumanoidCMU' in globals() and isinstance(env, Environment) and isinstance(env.task, HumanoidCMU):
+            self.observation_shape = get_humanoid_cmu_obs(env).shape
+            self.actions_shape = env.action_spec().shape
+        else:
+            raise NotImplementedError
         if self.obs_only:
             self.input_shape = self.observation_shape
         else:
             self.input_shape = tuple([o+a for o, a in zip(self.observation_shape, self.actions_shape)])
-        self.num_actions = env.action_space.shape[0]
+        self.num_actions = self.actions_shape[0]
         self.hidden_size = hidden_size
         self.build_ph()
         # Build grpah
