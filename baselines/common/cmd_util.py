@@ -3,7 +3,6 @@ Helpers for scripts like run_atari.py.
 """
 
 import os
-from mpi4py import MPI
 import gym
 from gym.wrappers import FlattenDictWrapper
 from baselines import logger
@@ -11,6 +10,7 @@ from baselines.bench import Monitor
 from baselines.common import set_global_seeds
 from baselines.common.atari_wrappers import make_atari, wrap_deepmind
 from baselines.common.vec_env.subproc_vec_env import SubprocVecEnv
+from mpi4py import MPI
 
 def make_atari_env(env_id, num_env, seed, wrapper_kwargs=None, start_index=0):
     """
@@ -31,10 +31,9 @@ def make_mujoco_env(env_id, seed):
     """
     Create a wrapped, monitored gym.Env for MuJoCo.
     """
-    rank = MPI.COMM_WORLD.Get_rank()
-    set_global_seeds(seed + 10000 * rank)
+    set_global_seeds(seed)
     env = gym.make(env_id)
-    env = Monitor(env, os.path.join(logger.get_dir(), str(rank)))
+    env = Monitor(env, logger.get_dir())
     env.seed(seed)
     return env
 
@@ -77,6 +76,11 @@ def mujoco_arg_parser():
     parser.add_argument('--seed', help='RNG seed', type=int, default=0)
     parser.add_argument('--num-timesteps', type=int, default=int(1e6))
     parser.add_argument('--play', default=False, action='store_true')
+    parser.add_argument('--out-base', help='the base directory to save model and log file', default='output')
+    parser.add_argument('--save-per-iter', help='save model every xx iterations', type=int, default=100)
+    parser.add_argument('--load-model-path', help='if provided, load the model', type=str, default=None)
+    parser.add_argument('--render-mode', help='render mode for model visualization', type=str, choices=['human', 'array'], default='human')
+    parser.add_argument('--vis-path', help='file to save visualization output', type=str, default=None)
     return parser
 
 def robotics_arg_parser():
