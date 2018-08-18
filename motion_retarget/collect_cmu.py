@@ -17,11 +17,70 @@ timestep = 0.0165  # timestep of RoboschoolForwardWalker
 _SUBJECT_ID = 8
 _SUBJECT_AMC_ID = [1,2,3,4,5,6,7,8,9,10,11]
 
+# Since this is a heuristic algorithm, we need to manually clean up the output
+# by adding and removing indices. The keys here are indices, not amc ids.
+# TODO: add _DEL_LIST.
+_ADD_LIST = {3: {'r': [116]}}
+
 
 def argsparser():
     parser = argparse.ArgumentParser("Collect CMU MoCap data")
     parser.add_argument('--retarget_path', help='path to the retarget data folder', default='data/cmu_mocap_bvh_retarget')
     return parser.parse_args()
+
+def find_zero_crossings(x):
+    assert np.all(np.sign(x) != 0)
+    ind = np.where(np.diff(np.sign(x)))[0]
+    out = []
+    for i in ind:
+        if abs(x[i]) <= abs(x[i+1]):
+            out.append(i)
+        else:
+            out.append(i+1)
+    return np.asarray(out)
+
+def segment_steps(rfoot_z, lfoot_z, ind):
+    rfoot_g1 = np.gradient(np.array(rfoot_z))
+    lfoot_g1 = np.gradient(np.array(lfoot_z))
+
+    zr = find_zero_crossings(rfoot_g1)
+    zl = find_zero_crossings(lfoot_g1)
+
+    rfoot_g2 = np.gradient(rfoot_g1)
+    lfoot_g2 = np.gradient(lfoot_g1)
+
+    # Thresholds are set by heuristics (inspecting the curves).
+    start_r = zl[np.where(np.logical_and(lfoot_g2[zl] > 0, rfoot_g2[zl] < -1e-4))[0]]
+    start_l = zr[np.where(np.logical_and(rfoot_g2[zr] > 0, lfoot_g2[zr] < -1e-4))[0]]
+
+    # Add indices from _ADD_LIST.
+    if ind in _ADD_LIST:
+        if 'r' in _ADD_LIST[ind]:
+            start_r = np.sort(np.concatenate((start_r, _ADD_LIST[ind]['r'])))
+        if 'l' in _ADD_LIST[ind]:
+            start_l = np.sort(np.concatenate((start_l, _ADD_LIST[ind]['l'])))
+    # TODO: add _DEL_LIST.
+
+    assert abs(len(start_r) - len(start_l)) <= 1
+    assert np.intersect1d(start_r, start_l).size == 0
+    if start_r[0] < start_l[0]:
+        assert len(start_r) >= len(start_l)
+        rs = start_r[:len(start_l)]
+        re = start_l
+        ls = start_l[:len(start_r)-1]
+        le = start_r[1:]
+    else:
+        assert len(start_l) >= len(start_r)
+        rs = start_r[:len(start_l)-1]
+        re = start_l[1:]
+        ls = start_l[:len(start_r)]
+        le = start_r
+    assert np.all(np.less(rs, re))
+    assert np.all(np.less(ls, le))
+
+    rstep = np.stack((np.asarray([ind] * len(rs)), rs, re - rs), axis=-1)
+    lstep = np.stack((np.asarray([ind] * len(ls)), ls, le - ls), axis=-1)
+    return rstep, lstep
 
 def main(args):
     env = gym.make('RoboschoolHumanoidBullet3-v1')
@@ -32,7 +91,9 @@ def main(args):
     assert args.retarget_path is not None
     all_qpos = []
     all_obs = []
-    for i in _SUBJECT_AMC_ID:
+    all_rstep = np.empty([0, 3], dtype=np.int64)
+    all_lstep = np.empty([0, 3], dtype=np.int64)
+    for ind, i in enumerate(_SUBJECT_AMC_ID):
         file_path = os.path.join(args.retarget_path,'{:02d}'.format(_SUBJECT_ID),'{:02d}_{:02d}.bvh'.format(_SUBJECT_ID,i))
         anim, _, ftime = BVH.load(file_path)
 
@@ -140,6 +201,8 @@ def main(args):
         vel = qvel_values_resampled[:,:3]
 
         obs = []
+        rfoot_z = []
+        lfoot_z = []
         for t in range(len(jnt)):
             for j, joint in enumerate(env.env.ordered_joints):
                 joint.reset_current_position(jnt[t, 2*j], jnt[t, 2*j+1])
@@ -151,18 +214,25 @@ def main(args):
                 r.query_position()
             state = env.env.calc_state()
             obs.append(state[None])
+            rfoot_z.append(env.env.parts['right_foot'].pose().xyz()[2])
+            lfoot_z.append(env.env.parts['left_foot'].pose().xyz()[2])
 
         # `feet_contact` is not included as it is unset without running `step`.
         # This does not matter if using new state vector.
         qpos = np.hstack((jnt, xyz, rpy, vel))
         obs = np.vstack(obs)
-        
+
         all_qpos.append(qpos)
         all_obs.append(obs)
 
+        rstep, lstep = segment_steps(rfoot_z, lfoot_z, ind)
+
+        all_rstep = np.vstack((all_rstep, rstep))
+        all_lstep = np.vstack((all_lstep, lstep))
+
     save_path = 'data/cmu_mocap.npz'
     if not os.path.isfile(save_path):
-        np.savez(save_path, obs=all_obs, qpos=all_qpos)
+        np.savez(save_path, obs=all_obs, qpos=all_qpos, rstep=all_rstep, lstep=all_lstep)
 
     print('done.')
 

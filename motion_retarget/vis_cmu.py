@@ -63,6 +63,30 @@ def main(args):
                     img.set_data(video[t])
                 writer.grab_frame()
 
+    for s in ('r', 'l'):
+        save_file = os.path.join(args.save_path,'{:02d}_{}step.mp4'.format(_SUBJECT_ID,s))
+        with writer.saving(fig, save_file, dpi=100):
+            video = []
+            for i in data[s + 'step']:
+                qpos = data['qpos'][i[0]]
+                for t in range(i[1], i[1] + i[2] + 1):
+                    for j, joint in enumerate(env.env.ordered_joints):
+                        joint.reset_current_position(qpos[t, 2*j], qpos[t, 2*j+1])
+                    cpose = roboschool.scene_abstract.cpp_household.Pose()
+                    cpose.set_xyz(*qpos[t, -9:-6])
+                    cpose.set_rpy(*qpos[t, -6:-3])
+                    env.env.cpp_robot.set_pose_and_speed(cpose, *qpos[t, -3:])
+                    for r in env.env.mjcf:
+                        r.query_position()
+                    video.append(env.render("rgb_array"))
+            for t in range(len(video)):
+                if t == 0:
+                    img = plt.imshow(video[0])
+                    plt.axis('tight')
+                else:
+                    img.set_data(video[t])
+                writer.grab_frame()
+
     print('done.')
 
 
