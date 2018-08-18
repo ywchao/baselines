@@ -124,7 +124,12 @@ def simplifiedIK(anim, targetmap):
                        82, 83,  # left shoulder
                            92]  # left elbow
 
-    accum_err = 0.0
+    end_effector_list = [ 9,  # right_ankle_y
+                         11,  # right_ankle_x
+                         16,  # left_ankle_y
+                         18]  # left_ankle_x
+
+    accum_err = [0.0, 0.0]
 
     for frame_idx in range(anim.rotations.shape[0]):
         # print(frame_idx, end=', ')
@@ -135,26 +140,36 @@ def simplifiedIK(anim, targetmap):
         anim_i.euler_rotations = anim.euler_rotations[frame_idx][None]
 
         if frame_idx == 0:
-            euler_rotations = anim.euler_rotations[frame_idx].copy()
-            translations = anim.positions[frame_idx,0].copy()
+            euler_rotations_1 = anim.euler_rotations[frame_idx].copy()
+            translations_1 = anim.positions[frame_idx,0].copy()
 
         target_pos = targetmap[frame_idx]
 
-        euler_rotations, translations, it, error = jacobianIK(
-            anim_i, euler_rotations, translations, modify_list, target_pos, opt_thres=1e-5)
-        accum_err += error
+        # Phase 1: all joints
+        euler_rotations_1, translations_1, it_1, error_1 = jacobianIK(
+            anim_i, euler_rotations_1, translations_1, modify_list, target_pos, opt_thres=1e-5)
+        accum_err[0] += error_1
 
-        print('frame: {:04d}, iter: {:03d}, error: {:.6f}'.format(frame_idx, it, error))
+        # Phase 2: ankles only, with criterion
+        euler_rotations_2, translations_2, it_2, error_2 = jacobianIK(
+            anim_i, euler_rotations_1, translations_1, modify_list, target_pos, opt_thres=1e-5,
+            end_effector_list=end_effector_list, criterion=True)
+        accum_err[1] += error_2
 
-        anim.euler_rotations[frame_idx] = euler_rotations.copy()
-        anim.rotations[frame_idx] = Quaternions.from_euler(np.radians(euler_rotations), order=anim.order, world=False)
-        anim.positions[frame_idx,0] = translations[None]
+        print('frame: {:04d} | iter_1: {:03d}, error_1: {:.6f} | iter_2: {:03d}, error_2: {:.6f}'.format(
+            frame_idx, it_1, error_1, it_2, error_2))
 
-    print('avg error: {:.6f}'.format(accum_err / anim.rotations.shape[0]))
+        anim.euler_rotations[frame_idx] = euler_rotations_2.copy()
+        anim.rotations[frame_idx] = Quaternions.from_euler(np.radians(euler_rotations_2), order=anim.order, world=False)
+        anim.positions[frame_idx,0] = translations_2[None]
+
+    print('avg error_1: {:.6f}, avg error_2: {:.6f}'.format(
+        accum_err[0] / anim.rotations.shape[0], accum_err[1] / anim.rotations.shape[0]))
     return anim
 
 
-def jacobianIK(anim, euler_rotations, translations, modify_list, target_pos, opt_thres=1e-5):
+def jacobianIK(anim, euler_rotations, translations, modify_list, target_pos,
+        opt_thres=1e-5, end_effector_list=None, criterion=False):
     """
     Args:
         euler_rotations: A [num_joints, 3] numpy array
@@ -207,7 +222,13 @@ def jacobianIK(anim, euler_rotations, translations, modify_list, target_pos, opt
         return euler_rotations
 
     # Initialize Jacobian
-    J = np.zeros((target_pos.shape[0] * target_pos.shape[1], len(modify_list) + 3))
+    if end_effector_list is None:
+        J = np.zeros((target_pos.shape[0] * target_pos.shape[1], len(modify_list) + 3))
+    else:
+        J = np.zeros((len(end_effector_list) * target_pos.shape[1], len(modify_list) + 3))
+
+    euler_rotations = euler_rotations.copy()
+    translations = translations.copy()
 
     fixed_list = list(set(range(anim.euler_rotations.shape[1]*3)) - set(modify_list))
     for idx in fixed_list:
@@ -219,6 +240,9 @@ def jacobianIK(anim, euler_rotations, translations, modify_list, target_pos, opt
     anim.update_rotations(euler_rotations[None])
     anim.positions[:,0] = translations[None]
 
+    if criterion:
+        theta_0 = np.hstack((euler_rotations.flatten()[modify_list], translations))
+
     eps = 1e-9
     prev_error = 1e10
     grad_scaling_factor = 100
@@ -227,6 +251,8 @@ def jacobianIK(anim, euler_rotations, translations, modify_list, target_pos, opt
     while True:
         init_coord = Animation.positions_global(anim)[0]
         dists = (target_pos - init_coord) * grad_scaling_factor
+        if end_effector_list is not None:
+            dists = dists[end_effector_list]
         dists = dists.flatten()
 
         # Compute Jacobian
@@ -236,10 +262,14 @@ def jacobianIK(anim, euler_rotations, translations, modify_list, target_pos, opt
             rot[ang_idx // 3, ang_idx % 3] += eps
             anim.update_rotations(rot[None])
             coord_plus_eps = Animation.positions_global(anim)[0]
+            if end_effector_list is not None:
+                coord_plus_eps = coord_plus_eps[end_effector_list]
 
             rot[ang_idx // 3, ang_idx % 3] -= 2.0 * eps
             anim.update_rotations(rot[None])
             coord_minus_eps = Animation.positions_global(anim)[0]
+            if end_effector_list is not None:
+                coord_minus_eps = coord_minus_eps[end_effector_list]
 
             grad = (coord_plus_eps - coord_minus_eps) / (2.0 * eps)
             J[:, col_idx] = grad.flatten()
@@ -252,10 +282,14 @@ def jacobianIK(anim, euler_rotations, translations, modify_list, target_pos, opt
             trans[idx] += eps
             anim.positions[:,0] = trans[None]
             coord_plus_eps = Animation.positions_global(anim)[0]
+            if end_effector_list is not None:
+                coord_plus_eps = coord_plus_eps[end_effector_list]
 
             trans[idx] -= 2.0 * eps
             anim.positions[:,0] = trans[None]
             coord_minus_eps = Animation.positions_global(anim)[0]
+            if end_effector_list is not None:
+                coord_minus_eps = coord_minus_eps[end_effector_list]
 
             grad = (coord_plus_eps - coord_minus_eps) / (2.0 * eps)
             J[:, len(modify_list)+idx] = grad.flatten()
@@ -266,8 +300,16 @@ def jacobianIK(anim, euler_rotations, translations, modify_list, target_pos, opt
 
         damping = 2.0
         l = damping * (1.0 / (1 + 0.001))
-        d = (l*l) * np.eye(J.shape[1])
-        dr = scipy.linalg.lu_solve(scipy.linalg.lu_factor(J.T.dot(J) + d), J.T.dot(dists))
+        if not criterion:
+            # Assumes J.shape[0] >= J.shape[1]
+            d = (l*l) * np.eye(J.shape[1])
+            dr = scipy.linalg.lu_solve(scipy.linalg.lu_factor(J.T.dot(J) + d), J.T.dot(dists))
+        else:
+            # Assumes J.shape[0] < J.shape[1]
+            d = (l*l) * np.eye(J.shape[0])
+            grad_crit = theta_0 - np.hstack((euler_rotations.flatten()[modify_list], translations))
+            dr = scipy.linalg.lu_solve(scipy.linalg.lu_factor(J.dot(J.T) + d), dists - J.dot(grad_crit))
+            dr = J.T.dot(dr) + grad_crit
 
         for col_idx, ang_idx in enumerate(modify_list):
             euler_rotations[ang_idx // 3, ang_idx % 3] += (dr[col_idx])
