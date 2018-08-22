@@ -73,27 +73,31 @@ def basicIK(skel_bvh, src_bvh):
          9:  9,  # right_ankle_y -> RightFoot
         10:  9,  # right_ankle_x_forward -> RightFoot
         11:  9,  # right_ankle_x -> RightFoot
-        12:  2,  # left_hip_forward -> LeftUpLeg
-        13:  2,  # left_hip -> LeftUpLeg
-        14:  2,  # left_hip_backward -> LeftUpLeg
-        15:  3,  # left_knee -> LeftLeg
-        16:  4,  # left_ankle_y -> LeftFoot
-        17:  4,  # left_ankle_x_forward -> LeftFoot
-        18:  4,  # left_ankle_x -> LeftFoot
-        19: 25,  # right_shoulder_forward -> RightArm
-        20: 25,  # right_shoulder -> RightArm
-        21: 25,  # right_shoulder_backward -> RightArm
-        22: 26,  # right_elbow_forward -> RightForeArm 
-        23: 26,  # right_elbow -> RightForeArm 
-        24: 26,  # right_elbow_backward -> RightForeArm 
-        25: 27,  # right_hand -> RightHand
-        26: 18,  # left_shoulder_forward -> LeftArm
-        27: 18,  # left_shoulder -> LeftArm
-        28: 18,  # left_shoulder_backward -> LeftArm
-        29: 19,  # left_elbow_forward -> LeftForeArm
-        30: 19,  # left_elbow -> LeftForeArm
-        31: 19,  # left_elbow_backward -> LeftForeArm
-        32: 20,  # left_hand -> LeftHand
+        12:  9,  # right_ankle_x_backward -> RightFoot
+        13: 10,  # right_toe_base -> RightToeBase
+        14:  2,  # left_hip_forward -> LeftUpLeg
+        15:  2,  # left_hip -> LeftUpLeg
+        16:  2,  # left_hip_backward -> LeftUpLeg
+        17:  3,  # left_knee -> LeftLeg
+        18:  4,  # left_ankle_y -> LeftFoot
+        19:  4,  # left_ankle_x_forward -> LeftFoot
+        20:  4,  # left_ankle_x -> LeftFoot
+        21:  4,  # left_ankle_x_backward -> LeftFoot
+        22:  5,  # left_toe_base -> LeftToeBase
+        23: 25,  # right_shoulder_forward -> RightArm
+        24: 25,  # right_shoulder -> RightArm
+        25: 25,  # right_shoulder_backward -> RightArm
+        26: 26,  # right_elbow_forward -> RightForeArm
+        27: 26,  # right_elbow -> RightForeArm
+        28: 26,  # right_elbow_backward -> RightForeArm
+        29: 27,  # right_hand -> RightHand
+        30: 18,  # left_shoulder_forward -> LeftArm
+        31: 18,  # left_shoulder -> LeftArm
+        32: 18,  # left_shoulder_backward -> LeftArm
+        33: 19,  # left_elbow_forward -> LeftForeArm
+        34: 19,  # left_elbow -> LeftForeArm
+        35: 19,  # left_elbow_backward -> LeftForeArm
+        36: 20,  # left_hand -> LeftHand
     }
     mapping = [mapping[i] for i in range(rest_targets.shape[1])]
 
@@ -108,26 +112,28 @@ def basicIK(skel_bvh, src_bvh):
 
 
 def simplifiedIK(anim, targetmap):
-    modify_list = [ 0,  1,  2,  # torso
-                    6,  7,      # adbomen_zy
-                           14,  # abdomen_x
-                   18, 19, 20,  # right_hip
-                       25,      # right_knee
-                       28,      # right_ankle_y
-                           35,  # right_ankle_x
-                   39, 40, 41,  # left_hip
-                       46,      # left_knee
-                       49,      # left_ankle_y
-                           56,  # left_ankle_x
-                       61, 62,  # right_shoulder
-                           71,  # right_elbow
-                       82, 83,  # left shoulder
-                           92]  # left elbow
+    modify_list = [  0,   1,   2,  # torso
+                     6,   7,       # adbomen_zy
+                              14,  # abdomen_x
+                    18,  19,  20,  # right_hip
+                         25,       # right_knee
+                         28,       # right_ankle_y
+                              35,  # right_ankle_x
+                    45,  46,  47,  # left_hip
+                         52,       # left_knee
+                         55,       # left_ankle_y
+                              62,  # left_ankle_x
+                         73,  74,  # right_shoulder
+                              83,  # right_elbow
+                         94,  95,  # left shoulder
+                             104]  # left elbow
 
     end_effector_list = [ 9,  # right_ankle_y
                          11,  # right_ankle_x
-                         16,  # left_ankle_y
-                         18]  # left_ankle_x
+                         13,  # right_toe_base
+                         18,  # left_ankle_y
+                         20,  # left_ankle_x
+                         22]  # left_toe_base
 
     accum_err = [0.0, 0.0]
 
@@ -184,17 +190,19 @@ def jacobianIK(anim, euler_rotations, translations, modify_list, target_pos,
         euler_rotations[ 5] = np.array([   90.    ,    0.    ,   90.    ])
         euler_rotations[ 7] = np.array([  -90.    ,  -90.    ,    0.    ])
         euler_rotations[10] = np.array([    0.    ,   63.4349,    0.    ])
-        euler_rotations[12] = np.array([   90.    ,    0.    ,  -90.    ])
-        euler_rotations[14] = np.array([  -90.    ,   90.    ,    0.    ])
-        euler_rotations[17] = np.array([    0.    ,   63.4349,    0.    ])
-        euler_rotations[19] = np.array([  -90.    ,  -45.    ,   35.2644])
-        euler_rotations[21] = np.array([   90.    ,   35.2644,   45.    ])
-        euler_rotations[22] = np.array([  -90.    ,  -45.    ,   35.2644])
-        euler_rotations[24] = np.array([   90.    ,   35.2644,   45.    ])
-        euler_rotations[26] = np.array([   90.    ,  -45.    ,  144.7356])
-        euler_rotations[28] = np.array([   90.    ,  -35.2644,  135.    ])
-        euler_rotations[29] = np.array([  -90.    ,   45.    ,   35.2644])
-        euler_rotations[31] = np.array([   90.    ,   35.2644,  -45.    ])
+        euler_rotations[12] = np.array([    0.    ,  -63.4349,    0.    ])
+        euler_rotations[14] = np.array([   90.    ,    0.    ,  -90.    ])
+        euler_rotations[16] = np.array([  -90.    ,   90.    ,    0.    ])
+        euler_rotations[19] = np.array([    0.    ,   63.4349,    0.    ])
+        euler_rotations[21] = np.array([    0.    ,  -63.4349,    0.    ])
+        euler_rotations[23] = np.array([  -90.    ,  -45.    ,   35.2644])
+        euler_rotations[25] = np.array([   90.    ,   35.2644,   45.    ])
+        euler_rotations[26] = np.array([  -90.    ,  -45.    ,   35.2644])
+        euler_rotations[28] = np.array([   90.    ,   35.2644,   45.    ])
+        euler_rotations[30] = np.array([   90.    ,  -45.    ,  144.7356])
+        euler_rotations[32] = np.array([   90.    ,  -35.2644,  135.    ])
+        euler_rotations[33] = np.array([  -90.    ,   45.    ,   35.2644])
+        euler_rotations[35] = np.array([   90.    ,   35.2644,  -45.    ])
         return euler_rotations
 
     def clip_angles(euler_rotations):
@@ -207,18 +215,18 @@ def jacobianIK(anim, euler_rotations, translations, modify_list, target_pos,
         euler_rotations[ 8,1] = euler_rotations[ 8,1].clip(   2, 160)  # right_knee (-y axis)
         euler_rotations[ 9,1] = euler_rotations[ 9,1].clip( -50,  50)  # right_ankle_y
         euler_rotations[11,2] = euler_rotations[11,2].clip( -50,  50)  # right_ankle_x
-        euler_rotations[13,0] = euler_rotations[13,0].clip( -25,   5)  # left_hip1
-        euler_rotations[13,1] = euler_rotations[13,1].clip( -60,  35)  # left_hip2
-        euler_rotations[13,2] = euler_rotations[13,2].clip(-120,  20)  # left_hip3
-        euler_rotations[15,1] = euler_rotations[15,1].clip(   2, 160)  # left_knee (-y axis)
-        euler_rotations[16,1] = euler_rotations[16,1].clip( -50,  50)  # left_ankle_y
-        euler_rotations[18,2] = euler_rotations[18,2].clip( -50,  50)  # left_ankle_x
-        euler_rotations[20,1] = euler_rotations[20,1].clip( -85,  60)  # right_shoulder1
-        euler_rotations[20,2] = euler_rotations[20,2].clip( -85,  60)  # right_shoulder2
-        euler_rotations[23,2] = euler_rotations[23,2].clip( -90,  50)  # right_elbow
-        euler_rotations[27,1] = euler_rotations[27,1].clip( -60,  85)  # left_shoulder1
-        euler_rotations[27,2] = euler_rotations[27,2].clip( -60,  85)  # left_shoulder2
-        euler_rotations[30,2] = euler_rotations[30,2].clip( -90,  50)  # left_elbow
+        euler_rotations[15,0] = euler_rotations[15,0].clip( -25,   5)  # left_hip1
+        euler_rotations[15,1] = euler_rotations[15,1].clip( -60,  35)  # left_hip2
+        euler_rotations[15,2] = euler_rotations[15,2].clip(-120,  20)  # left_hip3
+        euler_rotations[17,1] = euler_rotations[17,1].clip(   2, 160)  # left_knee (-y axis)
+        euler_rotations[18,1] = euler_rotations[18,1].clip( -50,  50)  # left_ankle_y
+        euler_rotations[20,2] = euler_rotations[20,2].clip( -50,  50)  # left_ankle_x
+        euler_rotations[24,1] = euler_rotations[24,1].clip( -85,  60)  # right_shoulder1
+        euler_rotations[24,2] = euler_rotations[24,2].clip( -85,  60)  # right_shoulder2
+        euler_rotations[27,2] = euler_rotations[27,2].clip( -90,  50)  # right_elbow
+        euler_rotations[31,1] = euler_rotations[31,1].clip( -60,  85)  # left_shoulder1
+        euler_rotations[31,2] = euler_rotations[31,2].clip( -60,  85)  # left_shoulder2
+        euler_rotations[34,2] = euler_rotations[34,2].clip( -90,  50)  # left_elbow
         return euler_rotations
 
     # Initialize Jacobian
@@ -354,24 +362,28 @@ if __name__ == '__main__':
 #  9: right_ankle_y                   |  9: RightFoot
 # 10: right_ankle_x_forward           | 10: RightToeBase
 # 11: right_ankle_x                   | 11: LowerBack
-# 12: left_hip_forward                | 12: Spine
-# 13: left_hip                        | 13: Spint1
-# 14: left_hip_backward               | 14: Neck
-# 15: left_knee                       | 15: Neck1
-# 16: left_ankle_y                    | 16: Head   
-# 17: left_ankle_x_forward            | 17: LeftShoulder
-# 18: left_ankle_x                    | 18: LeftArm
-# 19: right_shoulder_forward          | 19: LeftForeArm
-# 20: right_shoulder                  | 20: LeftHand
-# 21: right_shoulder_backward         | 21: LeftFingerBase
-# 22: right_elbow_forward             | 22: LeftHandIndex1
-# 23: right_elbow                     | 23: LThumb
-# 24: right_elbow_backward            | 24: RightShoulder
-# 25: right_hand                      | 25: RightArm
-# 26: left_shoulder_forward           | 26: RightForeArm
-# 27: left_shoulder                   | 27: RightHand
-# 28: left_shoulder_backward          | 28: RightFingerBase
-# 29: left_elbow_forward              | 29: RightHandIndex1
-# 30: left_elbow                      | 30: RThumb
-# 31: left_elbow_backward             
-# 32: left_hand                                                         
+# 12: right_ankle_x_backward          | 12: Spine
+# 13: right_toe_base                  | 13: Spint1
+# 14: left_hip_forward                | 14: Neck
+# 15: left_hip                        | 15: Neck1
+# 16: left_hip_backward               | 16: Head
+# 17: left_knee                       | 17: LeftShoulder
+# 18: left_ankle_y                    | 18: LeftArm
+# 19: left_ankle_x_forward            | 19: LeftForeArm
+# 20: left_ankle_x                    | 20: LeftHand
+# 21: left_ankle_x_backward           | 21: LeftFingerBase
+# 22: left_toe_base                   | 22: LeftHandIndex1
+# 23: right_shoulder_forward          | 23: LThumb
+# 24: right_shoulder                  | 24: RightShoulder
+# 25: right_shoulder_backward         | 25: RightArm
+# 26: right_elbow_forward             | 26: RightForeArm
+# 27: right_elbow                     | 27: RightHand
+# 28: right_elbow_backward            | 28: RightFingerBase
+# 29: right_hand                      | 29: RightHandIndex1
+# 30: left_shoulder_forward           | 30: RThumb
+# 31: left_shoulder
+# 32: left_shoulder_backward
+# 33: left_elbow_forward
+# 34: left_elbow
+# 35: left_elbow_backward
+# 36: left_hand

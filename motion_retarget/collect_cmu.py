@@ -20,7 +20,7 @@ _SUBJECT_AMC_ID = [1,2,3,4,5,6,7,8,9,10,11]
 # Since this is a heuristic algorithm, we need to manually clean up the output
 # by adding and removing indices. The keys here are indices, not amc ids.
 # TODO: add _DEL_LIST.
-_ADD_LIST = {3: {'r': [116]}}
+_ADD_LIST = {}
 
 
 def argsparser():
@@ -99,7 +99,7 @@ def main(args):
 
         xyz = anim.positions[:,0]
         rot = anim.euler_rotations.reshape(len(anim), -1)
-        rot = rot[:,[0,1,2,6,7,14,18,19,20,25,28,35,39,40,41,46,49,56,61,62,71,82,83,92]]
+        rot = rot[:,[0,1,2,6,7,14,18,19,20,25,28,35,45,46,47,52,55,62,73,74,83,94,95,104]]
         rot = np.deg2rad(rot)
         qpos_values = np.hstack((xyz,rot))
 
