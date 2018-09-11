@@ -106,7 +106,7 @@ def basicIK(skel_bvh, src_bvh):
     ik = BasicInverseKinematics(anim, targetmap, iterations=10, silent=True)
     ik()
 
-    anim.euler_rotations = np.degrees(anim.rotations.euler(order='zyx'[::-1])[...,::-1])
+    anim.euler_rotations = np.degrees(anim.rotations.euler(order=anim.order[::-1])[...,::-1])
 
     return anim, names, ftime, targetmap
 
@@ -332,7 +332,10 @@ def jacobianIK(anim, euler_rotations, translations, modify_list, target_pos,
         anim.positions[:,0] = translations[None]
 
         cur_coord = Animation.positions_global(anim)[0]
-        error = np.sum(np.square(cur_coord - target_pos))
+        if end_effector_list is not None:
+            error = np.sum(np.square(cur_coord[end_effector_list] - target_pos[end_effector_list]))
+        else:
+            error = np.sum(np.square(cur_coord - target_pos))
 
         it += 1
         # print(it, error)

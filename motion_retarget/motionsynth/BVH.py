@@ -228,7 +228,16 @@ def save(filename, anim, names=None, frametime=1.0/24.0, order='zyx', positions=
         #    rots = np.degrees((-anim.orients[np.newaxis] * anim.rotations).euler(order=order[::-1]))
         #else:
         #    rots = np.degrees(anim.rotations.euler(order=order[::-1]))
-        rots = np.degrees(anim.rotations.euler(order=order[::-1]))
+        if not hasattr(anim, 'euler_rotations'):
+            # TODO (ywchao): There will be an issue if order != 'zyx', because
+            # f.write() below assumes rots has order 'xyz'.
+            # TODO (ywchao): Converting euler_rotations to rotations and back
+            # may change the values, e.g. [0, 90, 0] -> [180, 89, 180]. For now
+            # use euler_rotations directly if available.
+            assert order == 'zyx'
+            rots = np.degrees(anim.rotations.euler(order=order[::-1]))
+        else:
+            rots = anim.euler_rotations[..., np.argsort([ordermap[order[0]], ordermap[order[1]], ordermap[order[2]]])]
         poss = anim.positions
         
         for i in range(anim.shape[0]):
