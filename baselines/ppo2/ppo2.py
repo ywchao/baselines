@@ -8,10 +8,12 @@ from baselines import logger
 from collections import deque
 from baselines.common import explained_variance
 from baselines.common.runners import AbstractEnvRunner
+import baselines.common.tf_util as U
+from baselines.gail.statistics import stats
 
 class Model(object):
     def __init__(self, *, policy, ob_space, ac_space, nbatch_act, nbatch_train,
-                nsteps, ent_coef, vf_coef, max_grad_norm):
+                nsteps, ent_coef, vf_coef, max_grad_norm, ob_rms, ret_rms):
         sess = tf.get_default_session()
 
         act_model = policy(sess, ob_space, ac_space, nbatch_act, 1, reuse=False)
@@ -65,15 +67,27 @@ class Model(object):
 
         def save(save_path):
             ps = sess.run(params)
+            # Save RMS
+            for rms in (ob_rms, ret_rms):
+                if rms is not None:
+                    ps += [rms.mean, rms.var, rms.count]
+                else:
+                    ps += [None, None, None]
             joblib.dump(ps, save_path)
 
         def load(load_path):
             loaded_params = joblib.load(load_path)
             restores = []
-            for p, loaded_p in zip(params, loaded_params):
+            for p, loaded_p in zip(params, loaded_params[:-6]):
                 restores.append(p.assign(loaded_p))
             sess.run(restores)
             # If you want to load weights, also save/load observation scaling inside VecNormalize
+            # Load RMS
+            for i, rms in enumerate((ob_rms, ret_rms)):
+                if rms is not None:
+                    rms.mean = loaded_params[i*3-6]
+                    rms.var = loaded_params[i*3-5]
+                    rms.count = loaded_params[i*3-4]
 
         self.train = train
         self.train_model = train_model
@@ -162,9 +176,15 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
     nbatch = nenvs * nsteps
     nbatch_train = nbatch // nminibatches
 
+    ob_rms, ret_rms = None, None
+    if hasattr(env, 'ob_rms'):
+        ob_rms = env.ob_rms
+    if hasattr(env, 'ret_rms'):
+        ret_rms = env.ret_rms
+
     make_model = lambda : Model(policy=policy, ob_space=ob_space, ac_space=ac_space, nbatch_act=nenvs, nbatch_train=nbatch_train,
                     nsteps=nsteps, ent_coef=ent_coef, vf_coef=vf_coef,
-                    max_grad_norm=max_grad_norm)
+                    max_grad_norm=max_grad_norm, ob_rms=ob_rms, ret_rms=ret_rms)
     if save_interval and logger.get_dir():
         import cloudpickle
         with open(osp.join(logger.get_dir(), 'make_model.pkl'), 'wb') as fh:
@@ -176,6 +196,11 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
 
     epinfobuf = deque(maxlen=100)
     tfirststart = time.time()
+
+    writer = U.FileWriter(logger.get_dir())
+    loss_stats = stats(model.loss_names)
+    ud_stats = stats(["fps", "explained_variance"])
+    ep_stats = stats(["rewards", "episode_length"])
 
     nupdates = total_timesteps//nbatch
     for update in range(1, nupdates+1):
@@ -235,6 +260,13 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
             savepath = osp.join(checkdir, '%.5i'%update)
             print('Saving to', savepath)
             model.save(savepath)
+        if update % 20 == 0 or update == 1:
+            loss_stats.add_all_summary(writer, lossvals, update)
+            ud_stats.add_all_summary(writer, [fps, float(ev)], update)
+            ep_stats.add_all_summary(
+                writer, [safemean([epinfo['r'] for epinfo in epinfobuf]),
+                         safemean([epinfo['l'] for epinfo in epinfobuf]),
+                         fps, float(ev)], update)
     env.close()
     return model
 

@@ -92,3 +92,17 @@ def robotics_arg_parser():
     parser.add_argument('--seed', help='RNG seed', type=int, default=0)
     parser.add_argument('--num-timesteps', type=int, default=int(1e6))
     return parser
+
+def parse_unknown_args(args):
+    """
+    Parse arguments not consumed by arg parser into a dicitonary
+    """
+    retval = {}
+    for arg in args:
+        assert arg.startswith('--')
+        assert '=' in arg, 'cannot parse arg {}'.format(arg)
+        key = arg.split('=')[0][2:]
+        value = arg.split('=')[1]
+        retval[key] = value
+
+    return retval
