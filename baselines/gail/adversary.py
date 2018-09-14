@@ -8,6 +8,13 @@ import numpy as np
 from baselines.common.mpi_running_mean_std import RunningMeanStd
 from baselines.common import tf_util as U
 
+from baselines.bench import Monitor
+
+from dm_control.rl.control import Environment
+from dm_control.suite.humanoid_CMU import HumanoidCMU
+from baselines.common.dm_control_util import get_humanoid_cmu_obs
+
+
 def logsigmoid(a):
     '''Equivalent to tf.log(tf.sigmoid(a))'''
     return -tf.nn.softplus(-a)
@@ -18,17 +25,31 @@ def logit_bernoulli_entropy(logits):
     return ent
 
 class TransitionClassifier(object):
-    def __init__(self, env, hidden_size, entcoeff=0.001, lr_rate=1e-3, scope="adversary"):
+    def __init__(self, env, hidden_size, entcoeff=0.001, lr_rate=1e-3, scope="adversary", obs_only=False):
         self.scope = scope
-        self.observation_shape = env.observation_space.shape
-        self.actions_shape = env.action_space.shape
-        self.input_shape = tuple([o+a for o, a in zip(self.observation_shape, self.actions_shape)])
-        self.num_actions = env.action_space.shape[0]
+        self.obs_only = obs_only
+        if isinstance(env, Monitor):
+            self.observation_shape = env.observation_space.shape
+            self.actions_shape = env.action_space.shape
+        elif isinstance(env, Environment) and isinstance(env.task, HumanoidCMU):
+            self.observation_shape = get_humanoid_cmu_obs(env).shape
+            self.actions_shape = env.action_spec().shape
+        else:
+            raise NotImplementedError
+        if self.obs_only:
+            self.input_shape = self.observation_shape
+        else:
+            self.input_shape = tuple([o+a for o, a in zip(self.observation_shape, self.actions_shape)])
+        self.num_actions = self.actions_shape[0]
         self.hidden_size = hidden_size
         self.build_ph()
         # Build grpah
-        generator_logits = self.build_graph(self.generator_obs_ph, self.generator_acs_ph, reuse=False)
-        expert_logits = self.build_graph(self.expert_obs_ph, self.expert_acs_ph, reuse=True)
+        if self.obs_only:
+            generator_logits = self.build_graph(self.generator_obs_ph, reuse=False)
+            expert_logits = self.build_graph(self.expert_obs_ph, reuse=True)
+        else:
+            generator_logits = self.build_graph(self.generator_obs_ph, self.generator_acs_ph, reuse=False)
+            expert_logits = self.build_graph(self.expert_obs_ph, self.expert_acs_ph, reuse=True)
         # Build accuracy
         generator_acc = tf.reduce_mean(tf.to_float(tf.nn.sigmoid(generator_logits) < 0.5))
         expert_acc = tf.reduce_mean(tf.to_float(tf.nn.sigmoid(expert_logits) > 0.5))
@@ -50,16 +71,22 @@ class TransitionClassifier(object):
         # Build Reward for policy
         self.reward_op = -tf.log(1-tf.nn.sigmoid(generator_logits)+1e-8)
         var_list = self.get_trainable_variables()
-        self.lossandgrad = U.function([self.generator_obs_ph, self.generator_acs_ph, self.expert_obs_ph, self.expert_acs_ph],
-                                      self.losses + [U.flatgrad(self.total_loss, var_list)])
+        if self.obs_only:
+            self.lossandgrad = U.function([self.generator_obs_ph, self.expert_obs_ph],
+                                          self.losses + [U.flatgrad(self.total_loss, var_list)])
+        else:
+            self.lossandgrad = U.function([self.generator_obs_ph, self.generator_acs_ph, self.expert_obs_ph, self.expert_acs_ph],
+                                          self.losses + [U.flatgrad(self.total_loss, var_list)])
 
     def build_ph(self):
         self.generator_obs_ph = tf.placeholder(tf.float32, (None, ) + self.observation_shape, name="observations_ph")
-        self.generator_acs_ph = tf.placeholder(tf.float32, (None, ) + self.actions_shape, name="actions_ph")
         self.expert_obs_ph = tf.placeholder(tf.float32, (None, ) + self.observation_shape, name="expert_observations_ph")
-        self.expert_acs_ph = tf.placeholder(tf.float32, (None, ) + self.actions_shape, name="expert_actions_ph")
+        if not self.obs_only:
+            self.generator_acs_ph = tf.placeholder(tf.float32, (None, ) + self.actions_shape, name="actions_ph")
+            self.expert_acs_ph = tf.placeholder(tf.float32, (None, ) + self.actions_shape, name="expert_actions_ph")
 
-    def build_graph(self, obs_ph, acs_ph, reuse=False):
+    def build_graph(self, obs_ph, acs_ph=None, reuse=False):
+        assert self.obs_only == (acs_ph is None)
         with tf.variable_scope(self.scope):
             if reuse:
                 tf.get_variable_scope().reuse_variables()
@@ -67,7 +94,10 @@ class TransitionClassifier(object):
             with tf.variable_scope("obfilter"):
                 self.obs_rms = RunningMeanStd(shape=self.observation_shape)
             obs = (obs_ph - self.obs_rms.mean / self.obs_rms.std)
-            _input = tf.concat([obs, acs_ph], axis=1)  # concatenate the two input -> form a transition
+            if self.obs_only:
+                _input = obs
+            else:
+                _input = tf.concat([obs, acs_ph], axis=1)  # concatenate the two input -> form a transition
             p_h1 = tf.contrib.layers.fully_connected(_input, self.hidden_size, activation_fn=tf.nn.tanh)
             p_h2 = tf.contrib.layers.fully_connected(p_h1, self.hidden_size, activation_fn=tf.nn.tanh)
             logits = tf.contrib.layers.fully_connected(p_h2, 1, activation_fn=tf.identity)
@@ -76,12 +106,16 @@ class TransitionClassifier(object):
     def get_trainable_variables(self):
         return tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, self.scope)
 
-    def get_reward(self, obs, acs):
+    def get_reward(self, obs, acs=None):
+        assert self.obs_only == (acs is None)
         sess = tf.get_default_session()
         if len(obs.shape) == 1:
             obs = np.expand_dims(obs, 0)
-        if len(acs.shape) == 1:
+        if not self.obs_only and len(acs.shape) == 1:
             acs = np.expand_dims(acs, 0)
-        feed_dict = {self.generator_obs_ph: obs, self.generator_acs_ph: acs}
+        if self.obs_only:
+            feed_dict = {self.generator_obs_ph: obs}
+        else:
+            feed_dict = {self.generator_obs_ph: obs, self.generator_acs_ph: acs}
         reward = sess.run(self.reward_op, feed_dict)
         return reward

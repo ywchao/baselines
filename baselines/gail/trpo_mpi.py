@@ -19,16 +19,45 @@ from baselines.common.mpi_adam import MpiAdam
 from baselines.common.cg import cg
 from baselines.gail.statistics import stats
 
+from baselines.bench import Monitor
 
-def traj_segment_generator(pi, env, reward_giver, horizon, stochastic):
+from dm_control.rl.control import Environment
+from dm_control.suite.humanoid_CMU import HumanoidCMU
+from baselines.common.dm_control_util import get_humanoid_cmu_obs
+
+_ASSERT_TH = 1e-2
+
+
+def traj_segment_generator(pi, env, reward_giver, horizon, stochastic, expert_dataset=None):
+
+    def env_reset_expert(env, qpos, t):
+        if isinstance(env, Environment) and isinstance(env.task, HumanoidCMU):
+            with env.physics.reset_context():
+                env.physics.data.qpos[:] = qpos[t, :63]
+                env.physics.data.qvel[:] = qpos[t, 63:]
+            return get_humanoid_cmu_obs(env)
+        else:
+            # TODO: handle other envs.
+            raise NotImplementedError
 
     # Initialize state variables
     t = 0
-    ac = env.action_space.sample()
     new = True
     rew = 0.0
     true_rew = 0.0
-    ob = env.reset()
+    obs_expert = None
+    assert (isinstance(env, Monitor) or (isinstance(env, Environment) and isinstance(env.task, HumanoidCMU)))
+    if isinstance(env, Monitor):
+        ac = env.action_space.sample()
+        ob = env.reset()
+    if isinstance(env, Environment) and isinstance(env.task, HumanoidCMU):
+        ac = np.zeros(env.action_spec().shape)
+        env.reset()
+        ob = get_humanoid_cmu_obs(env)
+    if expert_dataset is not None:
+        obs_expert, qpos = expert_dataset.get_next_batch(horizon)
+        ob = env_reset_expert(env, qpos, 0)
+        assert np.linalg.norm(obs_expert[0] - ob) < _ASSERT_TH
 
     cur_ep_ret = 0
     cur_ep_len = 0
@@ -55,7 +84,8 @@ def traj_segment_generator(pi, env, reward_giver, horizon, stochastic):
         if t > 0 and t % horizon == 0:
             yield {"ob": obs, "rew": rews, "vpred": vpreds, "new": news,
                    "ac": acs, "prevac": prevacs, "nextvpred": vpred * (1 - new),
-                   "ep_rets": ep_rets, "ep_lens": ep_lens, "ep_true_rets": ep_true_rets}
+                   "ep_rets": ep_rets, "ep_lens": ep_lens, "ep_true_rets": ep_true_rets,
+                   "ob_expert": obs_expert}
             _, vpred = pi.act(stochastic, ob)
             # Be careful!!! if you change the downstream algorithm to aggregate
             # several of these batches, then be sure to do a deepcopy
@@ -69,8 +99,20 @@ def traj_segment_generator(pi, env, reward_giver, horizon, stochastic):
         acs[i] = ac
         prevacs[i] = prevac
 
-        rew = reward_giver.get_reward(ob, ac)
-        ob, true_rew, new, _ = env.step(ac)
+        if reward_giver.obs_only:
+            rew = reward_giver.get_reward(ob)
+        else:
+            rew = reward_giver.get_reward(ob, ac)
+        if isinstance(env, Monitor):
+            ob, true_rew, new, _ = env.step(ac)
+        if isinstance(env, Environment) and isinstance(env.task, HumanoidCMU):
+            step_type, true_rew, _, ob = env.step(ac)
+            if new:
+                new = False
+            if ob['head_height'] < 1.0 or step_type == 2:
+                new = True
+            ob = get_humanoid_cmu_obs(env)
+            # assert true_rew is not None
         rews[i] = rew
         true_rews[i] = true_rew
 
@@ -84,8 +126,19 @@ def traj_segment_generator(pi, env, reward_giver, horizon, stochastic):
             cur_ep_ret = 0
             cur_ep_true_ret = 0
             cur_ep_len = 0
-            ob = env.reset()
+            if isinstance(env, Monitor):
+                ob = env.reset()
+            if isinstance(env, Environment) and isinstance(env.task, HumanoidCMU):
+                env.reset()
+                ob = get_humanoid_cmu_obs(env)
         t += 1
+
+        if expert_dataset is not None:
+            if t % horizon == 0:
+                obs_expert, qpos = expert_dataset.get_next_batch(horizon)
+            if new:
+                ob = env_reset_expert(env, qpos, t % horizon)
+                assert np.linalg.norm(obs_expert[t % horizon] - ob) < _ASSERT_TH
 
 
 def add_vtarg_and_adv(seg, gamma, lam):
@@ -105,12 +158,12 @@ def add_vtarg_and_adv(seg, gamma, lam):
 def learn(env, policy_func, reward_giver, expert_dataset, rank,
           pretrained, pretrained_weight, *,
           g_step, d_step, entcoeff, save_per_iter,
-          ckpt_dir, log_dir, timesteps_per_batch, task_name,
+          ckpt_dir, log_dir, timesteps_per_batch,
           gamma, lam,
           max_kl, cg_iters, cg_damping=1e-2,
           vf_stepsize=3e-4, d_stepsize=3e-4, vf_iters=3,
           max_timesteps=0, max_episodes=0, max_iters=0,
-          callback=None
+          callback=None, obs_only=False
           ):
 
     nworkers = MPI.COMM_WORLD.Get_size()
@@ -118,8 +171,18 @@ def learn(env, policy_func, reward_giver, expert_dataset, rank,
     np.set_printoptions(precision=3)
     # Setup losses and stuff
     # ----------------------------------------
-    ob_space = env.observation_space
-    ac_space = env.action_space
+    if isinstance(env, Monitor):
+        ob_space = env.observation_space
+        ac_space = env.action_space
+    elif isinstance(env, Environment) and isinstance(env.task, HumanoidCMU):
+        from gym import spaces
+        obs_dim = get_humanoid_cmu_obs(env).shape
+        ob_space = spaces.Box(np.inf*np.ones(obs_dim)*(-1),
+                              np.inf*np.ones(obs_dim))
+        ac_space = spaces.Box(env.action_spec().minimum,
+                              env.action_spec().maximum)
+    else:
+        raise NotImplementedError
     pi = policy_func("pi", ob_space, ac_space, reuse=(pretrained_weight != None))
     oldpi = policy_func("oldpi", ob_space, ac_space)
     atarg = tf.placeholder(dtype=tf.float32, shape=[None])  # Target advantage function (if applicable)
@@ -190,6 +253,7 @@ def learn(env, policy_func, reward_giver, expert_dataset, rank,
         out /= nworkers
         return out
 
+    writer = U.FileWriter(log_dir)
     U.initialize()
     th_init = get_flat()
     MPI.COMM_WORLD.Bcast(th_init, root=0)
@@ -201,7 +265,12 @@ def learn(env, policy_func, reward_giver, expert_dataset, rank,
 
     # Prepare for rollouts
     # ----------------------------------------
-    seg_gen = traj_segment_generator(pi, env, reward_giver, timesteps_per_batch, stochastic=True)
+    # TODO: Assume qpos initialization and randomizing at the sequence level if
+    # using obs_only. Can untie these features later.
+    if obs_only:
+        seg_gen = traj_segment_generator(pi, env, reward_giver, timesteps_per_batch, stochastic=True, expert_dataset=expert_dataset)
+    else:
+        seg_gen = traj_segment_generator(pi, env, reward_giver, timesteps_per_batch, stochastic=True)
 
     episodes_so_far = 0
     timesteps_so_far = 0
@@ -231,10 +300,10 @@ def learn(env, policy_func, reward_giver, expert_dataset, rank,
 
         # Save model
         if rank == 0 and iters_so_far % save_per_iter == 0 and ckpt_dir is not None:
-            fname = os.path.join(ckpt_dir, task_name)
+            fname = os.path.join(ckpt_dir, 'model.ckpt')
             os.makedirs(os.path.dirname(fname), exist_ok=True)
             saver = tf.train.Saver()
-            saver.save(tf.get_default_session(), fname)
+            saver.save(tf.get_default_session(), fname, global_step=iters_so_far)
 
         logger.log("********** Iteration %i ************" % iters_so_far)
 
@@ -313,16 +382,25 @@ def learn(env, policy_func, reward_giver, expert_dataset, rank,
         # ------------------ Update D ------------------
         logger.log("Optimizing Discriminator...")
         logger.log(fmt_row(13, reward_giver.loss_name))
-        ob_expert, ac_expert = expert_dataset.get_next_batch(len(ob))
         batch_size = len(ob) // d_step
         d_losses = []  # list of tuples, each of which gives the loss for a minibatch
-        for ob_batch, ac_batch in dataset.iterbatches((ob, ac),
-                                                      include_final_partial_batch=False,
-                                                      batch_size=batch_size):
-            ob_expert, ac_expert = expert_dataset.get_next_batch(len(ob_batch))
+        if obs_only:
+            arrays = (ob, ac, seg['ob_expert'])
+        else:
+            arrays = (ob, ac)
+        for arrays_batch in dataset.iterbatches(arrays, include_final_partial_batch=False, batch_size=batch_size):
+            ob_batch = arrays_batch[0]
+            ac_batch = arrays_batch[1]
+            if obs_only:
+                ob_expert = arrays_batch[2]
+            else:
+                ob_expert, ac_expert = expert_dataset.get_next_batch(len(ob_batch))
             # update running mean/std for reward_giver
             if hasattr(reward_giver, "obs_rms"): reward_giver.obs_rms.update(np.concatenate((ob_batch, ob_expert), 0))
-            *newlosses, g = reward_giver.lossandgrad(ob_batch, ac_batch, ob_expert, ac_expert)
+            if obs_only:
+                *newlosses, g = reward_giver.lossandgrad(ob_batch, ob_expert)
+            else:
+                *newlosses, g = reward_giver.lossandgrad(ob_batch, ac_batch, ob_expert, ac_expert)
             d_adam.update(allmean(g), d_stepsize)
             d_losses.append(newlosses)
         logger.log(fmt_row(13, np.mean(d_losses, axis=0)))
@@ -348,6 +426,13 @@ def learn(env, policy_func, reward_giver, expert_dataset, rank,
 
         if rank == 0:
             logger.dump_tabular()
+            if iters_so_far % 20 == 0:
+                g_loss_stats.add_all_summary(writer, g_losses, iters_so_far)
+                d_loss_stats.add_all_summary(writer, np.mean(d_losses, axis=0), iters_so_far)
+                ep_stats.add_all_summary(
+                    writer,
+                    [np.mean(true_rewbuffer), np.mean(rewbuffer), np.mean(lenbuffer)],
+                    iters_so_far)
 
 
 def flatten_lists(listoflists):

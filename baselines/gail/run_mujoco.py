@@ -19,14 +19,16 @@ from baselines import logger
 from baselines.gail.dataset.mujoco_dset import Mujoco_Dset
 from baselines.gail.adversary import TransitionClassifier
 
+from dm_control.suite import humanoid_CMU
+from dm_control.rl.control import Environment
+
 
 def argsparser():
     parser = argparse.ArgumentParser("Tensorflow Implementation of GAIL")
     parser.add_argument('--env_id', help='environment ID', default='Hopper-v2')
     parser.add_argument('--seed', help='RNG seed', type=int, default=0)
     parser.add_argument('--expert_path', type=str, default='data/deterministic.trpo.Hopper.0.00.npz')
-    parser.add_argument('--checkpoint_dir', help='the directory to save model', default='checkpoint')
-    parser.add_argument('--log_dir', help='the directory to save log file', default='log')
+    parser.add_argument('--out_base', help='the base directory to save model and log file', default='output/gail')
     parser.add_argument('--load_model_path', help='if provided, load the model', type=str, default=None)
     # Task
     parser.add_argument('--task', type=str, choices=['train', 'evaluate', 'sample'], default='train')
@@ -52,6 +54,10 @@ def argsparser():
     # Behavior Cloning
     boolean_flag(parser, 'pretrained', default=False, help='Use BC to pretrain')
     parser.add_argument('--BC_max_iter', help='Max iteration for training BC', type=int, default=1e4)
+    # Demonstration Configuration
+    boolean_flag(parser, 'obs_only', default=False, help='use only observation as demonstration')
+    # Visualization
+    parser.add_argument('--vis_path', help='file to save visualization output', type=str, default=None)
     return parser.parse_args()
 
 
@@ -59,34 +65,48 @@ def get_task_name(args):
     task_name = args.algo + "_gail."
     if args.pretrained:
         task_name += "with_pretrained."
+    if args.obs_only:
+        task_name += "obs_only."
     if args.traj_limitation != np.inf:
         task_name += "transition_limitation_%d." % args.traj_limitation
     task_name += args.env_id.split("-")[0]
     task_name = task_name + ".g_step_" + str(args.g_step) + ".d_step_" + str(args.d_step) + \
         ".policy_entcoeff_" + str(args.policy_entcoeff) + ".adversary_entcoeff_" + str(args.adversary_entcoeff)
     task_name += ".seed_" + str(args.seed)
+    task_name += ".num_timesteps_" + "{0:.2e}".format(args.num_timesteps)
     return task_name
 
 
 def main(args):
     U.make_session(num_cpu=1).__enter__()
     set_global_seeds(args.seed)
-    env = gym.make(args.env_id)
+    if args.env_id == 'humanoid_CMU_run':
+        assert args.obs_only is True
+        env = humanoid_CMU.run()
+        env.task.random.seed(args.seed)
+    else:
+        env = gym.make(args.env_id)
+        env = bench.Monitor(env, logger.get_dir() and
+                            osp.join(logger.get_dir(), "monitor.json"))
+        env.seed(args.seed)
 
     def policy_fn(name, ob_space, ac_space, reuse=False):
         return mlp_policy.MlpPolicy(name=name, ob_space=ob_space, ac_space=ac_space,
                                     reuse=reuse, hid_size=args.policy_hidden_size, num_hid_layers=2)
-    env = bench.Monitor(env, logger.get_dir() and
-                        osp.join(logger.get_dir(), "monitor.json"))
-    env.seed(args.seed)
     gym.logger.setLevel(logging.WARN)
     task_name = get_task_name(args)
-    args.checkpoint_dir = osp.join(args.checkpoint_dir, task_name)
-    args.log_dir = osp.join(args.log_dir, task_name)
+    out_dir = osp.join(args.out_base, task_name)
+    args.log_dir = out_dir
+    args.checkpoint_dir = osp.join(out_dir, 'checkpoints')
 
     if args.task == 'train':
-        dataset = Mujoco_Dset(expert_path=args.expert_path, traj_limitation=args.traj_limitation)
-        reward_giver = TransitionClassifier(env, args.adversary_hidden_size, entcoeff=args.adversary_entcoeff)
+        dataset = Mujoco_Dset(expert_path=args.expert_path,
+                              traj_limitation=args.traj_limitation,
+                              obs_only=args.obs_only)
+        reward_giver = TransitionClassifier(env,
+                                            args.adversary_hidden_size,
+                                            entcoeff=args.adversary_entcoeff,
+                                            obs_only=args.obs_only)
         train(env,
               args.seed,
               policy_fn,
@@ -102,7 +122,7 @@ def main(args):
               args.log_dir,
               args.pretrained,
               args.BC_max_iter,
-              task_name
+              args.obs_only
               )
     elif args.task == 'evaluate':
         runner(env,
@@ -120,7 +140,7 @@ def main(args):
 
 def train(env, seed, policy_fn, reward_giver, dataset, algo,
           g_step, d_step, policy_entcoeff, num_timesteps, save_per_iter,
-          checkpoint_dir, log_dir, pretrained, BC_max_iter, task_name=None):
+          checkpoint_dir, log_dir, pretrained, BC_max_iter, obs_only):
 
     pretrained_weight = None
     if pretrained and (BC_max_iter > 0):
@@ -137,7 +157,16 @@ def train(env, seed, policy_fn, reward_giver, dataset, algo,
             logger.set_level(logger.DISABLED)
         workerseed = seed + 10000 * MPI.COMM_WORLD.Get_rank()
         set_global_seeds(workerseed)
-        env.seed(workerseed)
+        if isinstance(env, bench.Monitor):
+            env.seed(workerseed)
+        elif isinstance(env, Environment):
+            env.task.random.seed(workerseed)
+        else:
+            raise NotImplementedError
+        if obs_only:
+            timesteps_per_batch = 1000
+        else:
+            timesteps_per_batch = 1024
         trpo_mpi.learn(env, policy_fn, reward_giver, dataset, rank,
                        pretrained=pretrained, pretrained_weight=pretrained_weight,
                        g_step=g_step, d_step=d_step,
@@ -145,11 +174,11 @@ def train(env, seed, policy_fn, reward_giver, dataset, algo,
                        max_timesteps=num_timesteps,
                        ckpt_dir=checkpoint_dir, log_dir=log_dir,
                        save_per_iter=save_per_iter,
-                       timesteps_per_batch=1024,
+                       timesteps_per_batch=timesteps_per_batch,
                        max_kl=0.01, cg_iters=10, cg_damping=0.1,
                        gamma=0.995, lam=0.97,
                        vf_iters=5, vf_stepsize=1e-3,
-                       task_name=task_name)
+                       obs_only=obs_only)
     else:
         raise NotImplementedError
 
