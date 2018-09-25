@@ -63,15 +63,6 @@ def main():
     model, env = train(args.env, num_timesteps=args.num_timesteps, seed=args.seed,
         save_per_iter=args.save_per_iter, **extra_args)
 
-    if args.play:
-        logger.log("Running trained model")
-        obs = np.zeros((env.num_envs,) + env.observation_space.shape)
-        obs[:] = env.reset()
-        while True:
-            actions = model.step(obs)[0]
-            obs[:]  = env.step(actions)[0]
-            env.render()
-
 
 if __name__ == '__main__':
     main()
