@@ -22,6 +22,6 @@ OUT_DIR="output/ppo2/RoboschoolHumanoid-v1.seed_$seed.num-timesteps_6.00e+07"
 time python -m baselines.ppo2.vis_model \
   --env=RoboschoolHumanoid-v1 \
   --seed=0 \
-  --load-model-path=$OUT_DIR/checkpoints/model.ckpt-14600 \
+  --load-model-path=$OUT_DIR/checkpoints/14600 \
   --render-mode=array \
-  --vis-path=$OUT_DIR/vis_model.ckpt-14600.mp4
+  --vis-path=$OUT_DIR/vis_14600.mp4
