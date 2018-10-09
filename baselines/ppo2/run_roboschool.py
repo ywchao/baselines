@@ -6,7 +6,7 @@ import os
 import roboschool
 
 
-def train(env_id, num_timesteps, seed, save_per_iter, nsteps, nminibatches, noptepochs, lr):
+def train(env_id, num_timesteps, seed, save_per_iter, load_model_path, nsteps, nminibatches, noptepochs, lr):
     from baselines.common import set_global_seeds
     from baselines.common.vec_env.vec_normalize import VecNormalize
     from baselines.ppo2 import ppo2
@@ -36,13 +36,16 @@ def train(env_id, num_timesteps, seed, save_per_iter, nsteps, nminibatches, nopt
                        lr=lr,
                        cliprange=0.2,
                        save_interval=100,
-                       total_timesteps=num_timesteps)
+                       total_timesteps=num_timesteps,
+                       load_path=load_model_path)
 
     return model, env
 
 
 def get_out_dir(args):
     dir_name = args.env
+    if args.load_model_path is not None:
+        dir_name += "-ft"
     dir_name += ".seed_" + str(args.seed)
     dir_name += ".num-timesteps_" + "{0:.2e}".format(args.num_timesteps)
     return os.path.join(args.out_base, 'ppo2', dir_name)
@@ -61,7 +64,7 @@ def main():
     extra_args = {k: parse(v) for k,v in parse_unknown_args(unknown_args).items()}
     logger.configure(dir=get_out_dir(args))
     model, env = train(args.env, num_timesteps=args.num_timesteps, seed=args.seed,
-        save_per_iter=args.save_per_iter, **extra_args)
+        save_per_iter=args.save_per_iter, load_model_path=args.load_model_path, **extra_args)
 
 
 if __name__ == '__main__':
