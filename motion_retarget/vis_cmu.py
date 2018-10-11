@@ -23,6 +23,8 @@ def main(args):
     print('visualizing cmu mocap data ... ')
 
     assert args.data_path is not None
+    data = np.load(args.data_path)
+    assert len(data['qpos']) == len(_SUBJECT_AMC_ID)
 
     if not os.path.exists(args.save_path):
         os.makedirs(args.save_path)
@@ -32,9 +34,6 @@ def main(args):
     fig = plt.figure(
         figsize=(env.env.VIDEO_W/100, env.env.VIDEO_H/100))
     fig.subplots_adjust(left=0, right=1, bottom=0, top=1)
-
-    data = np.load('data/cmu_mocap.npz')
-    assert len(data['qpos']) == len(_SUBJECT_AMC_ID)
 
     for i in range(len(_SUBJECT_AMC_ID)):
         qpos = data['qpos'][i]
