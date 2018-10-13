@@ -14,13 +14,27 @@ import BVH as BVH
 
 timestep = 0.0165  # timestep of RoboschoolForwardWalker
 
-_SUBJECT_ID = 8
-_SUBJECT_AMC_ID = [1,2,3,4,5,6,7,8,9,10,11]
+_SUBJECT_ID = {
+    'walk': 8,
+    'turn': 69,
+}
+_SUBJECT_AMC_ID = {
+    'walk': [1,2,3,4,5,6,7,8,9,10,11],
+    'turn': [13],
+}
 
 # Since this is a heuristic algorithm, we need to manually clean up the output
 # by adding and removing indices. The keys here are indices, not amc ids.
-_ADD_LIST = {}
-_DEL_LIST = {}
+_ADD_LIST = {
+    'walk': {},
+}
+_DEL_LIST = {
+    'walk': {},
+}
+
+# Manual segmentations
+_L_TURN = np.array([[0,  213,  88], [0,  726,  79], [0, 1234,  87], [0, 1784,  96]], dtype=np.int64)
+_R_TURN = np.array([[0,  444, 101], [0,  948, 109], [0, 1504,  97], [0, 2055, 110]], dtype=np.int64)
 
 
 def argsparser():
@@ -143,6 +157,8 @@ def collect_obs(env, qpos, task='walk'):
     obs = []
     if task == "walk":
         aux = {'rfoot_z': [], 'lfoot_z': []}
+    if task == "turn":
+        aux = {}
     for t in range(len(qpos)):
         for j, joint in enumerate(env.env.ordered_joints):
             joint.reset_current_position(qpos[t, 2*j], qpos[t, 2*j+1])
@@ -172,7 +188,7 @@ def find_zero_crossings(x):
             out.append(i+1)
     return np.asarray(out)
 
-def segment_steps(rfoot_z, lfoot_z, ind):
+def segment_walk(rfoot_z, lfoot_z, ind):
     rfoot_g1 = np.gradient(rfoot_z)
     lfoot_g1 = np.gradient(lfoot_z)
 
@@ -186,16 +202,16 @@ def segment_steps(rfoot_z, lfoot_z, ind):
     start_r = zl[np.logical_and(lfoot_g2[zl] > 0, rfoot_g2[zl] < -1e-4)]
     start_l = zr[np.logical_and(rfoot_g2[zr] > 0, lfoot_g2[zr] < -1e-4)]
 
-    if ind in _ADD_LIST:
-        if 'r' in _ADD_LIST[ind]:
-            start_r = np.sort(np.concatenate((start_r, _ADD_LIST[ind]['r'])))
-        if 'l' in _ADD_LIST[ind]:
-            start_l = np.sort(np.concatenate((start_l, _ADD_LIST[ind]['l'])))
+    if ind in _ADD_LIST['walk']:
+        if 'r' in _ADD_LIST['walk'][ind]:
+            start_r = np.sort(np.concatenate((start_r, _ADD_LIST['walk'][ind]['r'])))
+        if 'l' in _ADD_LIST['walk'][ind]:
+            start_l = np.sort(np.concatenate((start_l, _ADD_LIST['walk'][ind]['l'])))
     if ind in _DEL_LIST:
-        if 'r' in _DEL_LIST[ind]:
-            start_r = np.delete(start_r, [np.where(start_r == x) for x in _DEL_LIST[ind]['r']])
-        if 'l' in _DEL_LIST[ind]:
-            start_l = np.delete(start_l, [np.where(start_l == x) for x in _DEL_LIST[ind]['l']])
+        if 'r' in _DEL_LIST['walk'][ind]:
+            start_r = np.delete(start_r, [np.where(start_r == x) for x in _DEL_LIST['walk'][ind]['r']])
+        if 'l' in _DEL_LIST['walk'][ind]:
+            start_l = np.delete(start_l, [np.where(start_l == x) for x in _DEL_LIST['walk'][ind]['l']])
 
     assert abs(len(start_r) - len(start_l)) <= 1
     assert np.intersect1d(start_r, start_l).size == 0
@@ -225,29 +241,31 @@ def main(args):
     print('collecting cmu mocap data ... ')
 
     assert args.retarget_path is not None
-    all_qpos = []
-    all_obs = []
-    all_rstep = np.empty([0, 3], dtype=np.int64)
-    all_lstep = np.empty([0, 3], dtype=np.int64)
-    for ind, i in enumerate(_SUBJECT_AMC_ID):
-        file_path = os.path.join(args.retarget_path,'{:02d}'.format(_SUBJECT_ID),'{:02d}_{:02d}.bvh'.format(_SUBJECT_ID,i))
-        
-        qpos = collect_qpos(file_path)
-        
-        obs, aux = collect_obs(env, qpos, task='walk')
-        
-        rstep, lstep = segment_steps(aux['rfoot_z'], aux['lfoot_z'], ind)
 
-        all_qpos.append(qpos)
-        all_obs.append(obs)
-        all_rstep = np.vstack((all_rstep, rstep))
-        all_lstep = np.vstack((all_lstep, lstep))
+    for task in ("walk", "turn"):
+        data = {'qpos': [], 'obs': []}
+        if task == "walk":
+            data['rstep'] = np.empty([0, 3], dtype=np.int64)
+            data['lstep'] = np.empty([0, 3], dtype=np.int64)
+        if task == "turn":
+            data['rturn'] = _R_TURN
+            data['lturn'] = _L_TURN
 
-    save_path = 'data/cmu_mocap.npz'
-    if not os.path.isfile(save_path):
-        np.savez(save_path, obs=all_obs, qpos=all_qpos, rstep=all_rstep, lstep=all_lstep)
+        for ind, i in enumerate(_SUBJECT_AMC_ID[task]):
+            file_path = os.path.join(
+                args.retarget_path,'{:02d}'.format(_SUBJECT_ID[task]),'{:02d}_{:02d}.bvh'.format(_SUBJECT_ID[task],i))
+            qpos = collect_qpos(file_path)
+            obs, aux = collect_obs(env, qpos, task=task)
+            data['qpos'].append(qpos)
+            data['obs'].append(obs)
+            if task == "walk":
+                rstep, lstep = segment_walk(aux['rfoot_z'], aux['lfoot_z'], ind)
+                data['rstep'] = np.vstack((data['rstep'], rstep))
+                data['lstep'] = np.vstack((data['lstep'], lstep))
 
-    print('done.')
+        save_path = 'data/cmu_mocap_{}.npz'.format(task)
+        if not os.path.isfile(save_path):
+            np.savez(save_path, **data)
 
 
 if __name__ == '__main__':
