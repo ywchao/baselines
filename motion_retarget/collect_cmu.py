@@ -17,19 +17,23 @@ timestep = 0.0165  # timestep of RoboschoolForwardWalker
 _SUBJECT_ID = {
     'walk': 8,
     'turn': 69,
+    'sit': 143,
 }
 _SUBJECT_AMC_ID = {
     'walk': [1,2,3,4,5,6,7,8,9,10,11],
     'turn': [13],
+    'sit': [18],
 }
 
 # Since this is a heuristic algorithm, we need to manually clean up the output
 # by adding and removing indices. The keys here are indices, not amc ids.
 _ADD_LIST = {
     'walk': {},
+    'sit': {},
 }
 _DEL_LIST = {
     'walk': {},
+    'sit': {},
 }
 
 # Manual segmentations
@@ -159,6 +163,8 @@ def collect_obs(env, qpos, task='walk'):
         aux = {'rfoot_z': [], 'lfoot_z': []}
     if task == "turn":
         aux = {}
+    if task == "sit":
+        aux = {'pelvis_z': [], 'foot_z': [], 'foot_x': []}
     for t in range(len(qpos)):
         for j, joint in enumerate(env.env.ordered_joints):
             joint.reset_current_position(qpos[t, 2*j], qpos[t, 2*j+1])
@@ -173,6 +179,12 @@ def collect_obs(env, qpos, task='walk'):
         if task == "walk":
             aux['rfoot_z'].append(env.env.parts['right_foot'].pose().xyz()[2])
             aux['lfoot_z'].append(env.env.parts['left_foot'].pose().xyz()[2])
+        if task == "sit":
+            aux['pelvis_z'].append(env.env.parts['pelvis'].pose().xyz()[2])
+            aux['foot_z'].append(np.mean([env.env.parts['right_foot'].pose().xyz()[2],
+                                          env.env.parts['left_foot'].pose().xyz()[2]]))
+            aux['foot_x'].append(np.mean([-1.0 * env.env.parts['right_foot'].pose().xyz()[1],
+                                          -1.0 * env.env.parts['left_foot'].pose().xyz()[1]]))
     obs = np.vstack(obs)
     aux = {k: np.array(v, dtype=np.float32) for k, v in aux.items()}
     return obs, aux
@@ -188,7 +200,7 @@ def find_zero_crossings(x):
             out.append(i+1)
     return np.asarray(out)
 
-def segment_walk(rfoot_z, lfoot_z, ind):
+def segment_walk(rfoot_z, lfoot_z, ind, task):
     rfoot_g1 = np.gradient(rfoot_z)
     lfoot_g1 = np.gradient(lfoot_z)
 
@@ -202,16 +214,16 @@ def segment_walk(rfoot_z, lfoot_z, ind):
     start_r = zl[np.logical_and(lfoot_g2[zl] > 0, rfoot_g2[zl] < -1e-4)]
     start_l = zr[np.logical_and(rfoot_g2[zr] > 0, lfoot_g2[zr] < -1e-4)]
 
-    if ind in _ADD_LIST['walk']:
-        if 'r' in _ADD_LIST['walk'][ind]:
-            start_r = np.sort(np.concatenate((start_r, _ADD_LIST['walk'][ind]['r'])))
-        if 'l' in _ADD_LIST['walk'][ind]:
-            start_l = np.sort(np.concatenate((start_l, _ADD_LIST['walk'][ind]['l'])))
+    if ind in _ADD_LIST[task]:
+        if 'r' in _ADD_LIST[task][ind]:
+            start_r = np.sort(np.concatenate((start_r, _ADD_LIST[task][ind]['r'])))
+        if 'l' in _ADD_LIST[task][ind]:
+            start_l = np.sort(np.concatenate((start_l, _ADD_LIST[task][ind]['l'])))
     if ind in _DEL_LIST:
-        if 'r' in _DEL_LIST['walk'][ind]:
-            start_r = np.delete(start_r, [np.where(start_r == x) for x in _DEL_LIST['walk'][ind]['r']])
-        if 'l' in _DEL_LIST['walk'][ind]:
-            start_l = np.delete(start_l, [np.where(start_l == x) for x in _DEL_LIST['walk'][ind]['l']])
+        if 'r' in _DEL_LIST[task][ind]:
+            start_r = np.delete(start_r, [np.where(start_r == x) for x in _DEL_LIST[task][ind]['r']])
+        if 'l' in _DEL_LIST[task][ind]:
+            start_l = np.delete(start_l, [np.where(start_l == x) for x in _DEL_LIST[task][ind]['l']])
 
     assert abs(len(start_r) - len(start_l)) <= 1
     assert np.intersect1d(start_r, start_l).size == 0
@@ -234,6 +246,56 @@ def segment_walk(rfoot_z, lfoot_z, ind):
     lstep = np.stack((np.asarray([ind] * len(ls)), ls, le - ls), axis=-1)
     return rstep, lstep
 
+def segment_sit(pelvis_z, ind, task):
+    pelvis_g1 = np.gradient(pelvis_z)
+    pelvis_g2 = np.gradient(pelvis_g1)
+
+    z = find_zero_crossings(pelvis_g1)
+
+    # Thresholds are set by heuristics (inspecting the curves).
+    start_d = z[np.logical_and(np.abs(pelvis_g2[z]) < 1e-4, pelvis_z[z] > 0.8)]
+    start_u = z[np.logical_and(np.abs(pelvis_g2[z]) < 1e-4, pelvis_z[z] < 0.8)]
+
+    if ind in _ADD_LIST:
+        if 'd' in _ADD_LIST[ind]:
+            start_d = np.sort(np.concatenate((start_d, _ADD_LIST[task][ind]['d'])))
+        if 'u' in _ADD_LIST[ind]:
+            start_u = np.sort(np.concatenate((start_u, _ADD_LIST[task][ind]['u'])))
+    if ind in _DEL_LIST:
+        if 'd' in _DEL_LIST[ind]:
+            start_d = np.delete(start_d, [np.where(start_d == x) for x in _DEL_LIST[task][ind]['d']])
+        if 'u' in _DEL_LIST[ind]:
+            start_u = np.delete(start_u, [np.where(start_u == x) for x in _DEL_LIST[task][ind]['u']])
+
+    assert abs(len(start_d) - len(start_u)) <= 1
+    assert np.intersect1d(start_d, start_u).size == 0
+    if start_d[0] < start_u[0]:
+        assert len(start_d) >= len(start_u)
+        ds = start_d[:len(start_u)]
+        de = start_u
+        us = start_u[:len(start_d)-1]
+        ue = start_d[1:]
+    else:
+        assert len(start_u) >= len(start_d)
+        ds = start_d[:len(start_u)-1]
+        de = start_u[1:]
+        us = start_u[:len(start_d)]
+        ue = start_d
+    assert np.all(np.less(ds, de))
+    assert np.all(np.less(us, ue))
+
+    sitd = np.stack((np.asarray([ind] * len(ds)), ds, de - ds), axis=-1)
+    situ = np.stack((np.asarray([ind] * len(us)), us, ue - us), axis=-1)
+
+    return sitd, situ
+
+def align_foot_sit(segments, foot_z, foot_x):
+    offset_z, offset_x = [], []
+    for s in segments:
+        offset_z.append(foot_z[s[1]:s[1] + s[2] + 1] - 0.07)  # approximating touching floor
+        offset_x.append(foot_x[s[1]:s[1] + s[2] + 1] - foot_x[s[1]])
+    return offset_z, offset_x
+
 def main(args):
     env = gym.make('RoboschoolHumanoidBullet3-v1')
     env.reset()
@@ -242,7 +304,7 @@ def main(args):
 
     assert args.retarget_path is not None
 
-    for task in ("walk", "turn"):
+    for task in ("walk", "turn", "sit"):
         data = {'qpos': [], 'obs': []}
         if task == "walk":
             data['rstep'] = np.empty([0, 3], dtype=np.int64)
@@ -250,6 +312,10 @@ def main(args):
         if task == "turn":
             data['rturn'] = _R_TURN
             data['lturn'] = _L_TURN
+        if task == "sit":
+            data['sitd'] = np.empty([0, 3], dtype=np.int64)
+            data['offsetz'] = []
+            data['offsetx'] = []
 
         for ind, i in enumerate(_SUBJECT_AMC_ID[task]):
             file_path = os.path.join(
@@ -259,9 +325,15 @@ def main(args):
             data['qpos'].append(qpos)
             data['obs'].append(obs)
             if task == "walk":
-                rstep, lstep = segment_walk(aux['rfoot_z'], aux['lfoot_z'], ind)
+                rstep, lstep = segment_walk(aux['rfoot_z'], aux['lfoot_z'], ind, task)
                 data['rstep'] = np.vstack((data['rstep'], rstep))
                 data['lstep'] = np.vstack((data['lstep'], lstep))
+            if task == "sit":
+                sitd, _ = segment_sit(aux['pelvis_z'], ind, task)
+                data['sitd'] = np.vstack((data['sitd'], sitd))
+                offset_z, offset_x = align_foot_sit(sitd, aux['foot_z'], aux['foot_x'])
+                data['offsetz'].append(offset_z)
+                data['offsetx'].append(offset_x)
 
         save_path = 'data/cmu_mocap_{}.npz'.format(task)
         if not os.path.isfile(save_path):

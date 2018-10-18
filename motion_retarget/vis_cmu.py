@@ -9,15 +9,18 @@ import gym, roboschool
 _SUBJECT_ID = {
     'walk': 8,
     'turn': 69,
+    'sit': 143,
 }
 _SUBJECT_AMC_ID = {
     'walk': [1,2,3,4,5,6,7,8,9,10,11],
     'turn': [13],
+    'sit': [18],
 }
 
 _SEG_KEYS = {
     'walk': ("rstep", "lstep"),
     'turn': ("rturn", "lturn"),
+    'sit': ("sitd",),
 }
 
 
@@ -41,7 +44,7 @@ def main(args):
         figsize=(env.env.VIDEO_W/100, env.env.VIDEO_H/100))
     fig.subplots_adjust(left=0, right=1, bottom=0, top=1)
 
-    for task in ("walk", "turn"):
+    for task in ("walk", "turn", "sit"):
         data = np.load('data/cmu_mocap_{}.npz'.format(task))
         assert len(data['qpos']) == len(_SUBJECT_AMC_ID[task])
 
@@ -80,9 +83,18 @@ def main(args):
 
             with writer.saving(fig, save_file, dpi=100):
                 video = []
-                for i in data[k]:
-                    qpos = data['qpos'][i[0]]
-                    for t in range(i[1], i[1] + i[2] + 1):
+                for i, s in enumerate(data[k]):
+                    qpos = data['qpos'][s[0]].copy()
+                    for t in range(s[1], s[1] + s[2] + 1):
+                        if task == "sit":
+                            qpos[t, -4] += np.pi/2
+                            qpos[t, -9:-7] = qpos[t, -9:-7].dot(np.array([[0.0, 1.0],[-1.0, 0.0]], dtype=np.float32))
+                            qpos[t, -3:-1] = qpos[t, -3:-1].dot(np.array([[0.0, 1.0],[-1.0, 0.0]], dtype=np.float32))
+                            qpos[t, -9] -= data['offsetx'][0][i][t-s[1]]
+                            qpos[t, -7] -= data['offsetz'][0][i][t-s[1]]
+                            if t > s[1]:
+                                qpos[t, -3] = (qpos[t, -9] - qpos[t-1, -9]) / 0.0165
+                                qpos[t, -1] = (qpos[t, -7] - qpos[t-1, -7]) / 0.0165
                         for j, joint in enumerate(env.env.ordered_joints):
                             joint.reset_current_position(qpos[t, 2*j], qpos[t, 2*j+1])
                         cpose = roboschool.scene_abstract.cpp_household.Pose()

@@ -16,6 +16,13 @@ python motion_retarget/retarget_cmu.py \
   --src_bvh data/cmu_mocap_bvh/69/69_13.bvh \
   --out_bvh data/cmu_mocap_bvh_retarget/69/69_13.bvh
 
+# sit
+echo "processing 143/143_18.bvh ... "
+
+python motion_retarget/retarget_cmu.py \
+  --src_bvh data/cmu_mocap_bvh/143/143_18.bvh \
+  --out_bvh data/cmu_mocap_bvh_retarget/143/143_18.bvh
+
 
 python motion_retarget/collect_cmu.py
 
