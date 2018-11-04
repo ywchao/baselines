@@ -6,11 +6,12 @@ import os
 import roboschool
 
 
-def train(env_id, num_timesteps, seed, save_per_iter, load_model_path, nsteps, nminibatches, noptepochs, lr):
+def train(env_id, num_timesteps, seed, save_per_iter, load_model_path,
+          nsteps, nminibatches, noptepochs, lr, load_sub_paths=None):
     from baselines.common import set_global_seeds
     from baselines.common.vec_env.vec_normalize import VecNormalize
     from baselines.ppo2 import ppo2
-    from baselines.ppo2.policies import MlpPolicy
+    from baselines.ppo2.policies import MlpPolicy, HierarchicalMlpPolicy
     import gym
     import tensorflow as tf
     from baselines.common.vec_env.dummy_vec_env import DummyVecEnv
@@ -26,10 +27,17 @@ def train(env_id, num_timesteps, seed, save_per_iter, load_model_path, nsteps, n
         return env
 
     env = DummyVecEnv([make_env])
-    env = VecNormalize(env)
+    if isinstance(env.action_space, gym.spaces.Dict):
+        env = VecNormalize(env, skip_rms=('switch',))
+    else:
+        env = VecNormalize(env)
 
     set_global_seeds(seed)
-    policy = MlpPolicy
+    if isinstance(env.action_space, gym.spaces.Dict):
+        policy = HierarchicalMlpPolicy
+    else:
+        policy = MlpPolicy
+
     model = ppo2.learn(policy=policy, env=env, nsteps=nsteps, nminibatches=nminibatches,
                        lam=0.95, gamma=0.99, noptepochs=noptepochs, log_interval=1,
                        ent_coef=0.0,
@@ -37,7 +45,8 @@ def train(env_id, num_timesteps, seed, save_per_iter, load_model_path, nsteps, n
                        cliprange=0.2,
                        save_interval=100,
                        total_timesteps=num_timesteps,
-                       load_path=load_model_path)
+                       load_path=load_model_path,
+                       load_sub_paths=load_sub_paths)
 
     return model, env
 

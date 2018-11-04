@@ -5,7 +5,7 @@ from baselines.common.vec_env.dummy_vec_env import DummyVecEnv
 from baselines.common.vec_env.vec_normalize import VecNormalize
 from baselines import bench
 from baselines.ppo2 import ppo2
-from baselines.ppo2.policies import MlpPolicy
+from baselines.ppo2.policies import MlpPolicy, HierarchicalMlpPolicy
 import gym
 import tensorflow as tf
 import roboschool
@@ -26,14 +26,20 @@ def main():
         return env
 
     env = DummyVecEnv([make_env])
-    env = VecNormalize(env)
+    if isinstance(env.action_space, gym.spaces.Dict):
+        env = VecNormalize(env, skip_rms=('switch',))
+    else:
+        env = VecNormalize(env)
 
     set_global_seeds(args.seed)
 
     ob_space = env.observation_space
     ac_space = env.action_space
 
-    policy = MlpPolicy
+    if isinstance(env.action_space, gym.spaces.Dict):
+        policy = HierarchicalMlpPolicy
+    else:
+        policy = MlpPolicy
     make_model = lambda : ppo2.Model(policy=policy, ob_space=ob_space, ac_space=ac_space,
     	            nbatch_act=1, nbatch_train=64,
                     nsteps=2048, ent_coef=0.0, vf_coef=0.5,
@@ -46,8 +52,12 @@ def main():
     def traj_segment_generator_human(model, env):
         obs = env.reset()
         while True:
-            actions = model.step(obs)[0]
-            obs  = env.step(actions)[0]
+            if isinstance(env.action_space, gym.spaces.Dict):
+                actions = model.step(obs)[4]
+                obs = env.step([s for s in zip(*actions)])[0]
+            else:
+                actions = model.step(obs)[0]
+                obs = env.step(actions)[0]
             env.render()
 
     def traj_segment_generator_array(model, env, save_file):
@@ -72,8 +82,12 @@ def main():
                 obs = env.reset()
                 while True:
                     video.append(env.venv.envs[0].render("rgb_array"))
-                    actions = model.step(obs)[0]
-                    obs, _, dones, _  = env.step(actions)
+                    if isinstance(env.action_space, gym.spaces.Dict):
+                        actions = model.step(obs)[4]
+                        obs, _, dones, _ = env.step([s for s in zip(*actions)])
+                    else:
+                        actions = model.step(obs)[0]
+                        obs, _, dones, _  = env.step(actions)
                     # Cannot run extra steps after done due to auto reset in VecNormalize
                     if dones[0]:
                         break

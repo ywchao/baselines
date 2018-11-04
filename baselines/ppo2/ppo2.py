@@ -8,6 +8,7 @@ from baselines import logger
 from collections import deque
 from baselines.common import explained_variance
 from baselines.common.runners import AbstractEnvRunner
+from baselines.common.running_mean_std import RunningMeanStd
 import baselines.common.tf_util as U
 from baselines.gail.statistics import stats
 
@@ -19,7 +20,10 @@ class Model(object):
         act_model = policy(sess, ob_space, ac_space, nbatch_act, 1, reuse=False)
         train_model = policy(sess, ob_space, ac_space, nbatch_train, nsteps, reuse=True)
 
-        A = train_model.pdtype.sample_placeholder([None])
+        if isinstance(train_model.pdtype, dict):
+            A = train_model.sample_placeholder([None])
+        else:
+            A = train_model.pdtype.sample_placeholder([None])
         ADV = tf.placeholder(tf.float32, [None])
         R = tf.placeholder(tf.float32, [None])
         OLDNEGLOGPAC = tf.placeholder(tf.float32, [None])
@@ -27,8 +31,12 @@ class Model(object):
         LR = tf.placeholder(tf.float32, [])
         CLIPRANGE = tf.placeholder(tf.float32, [])
 
-        neglogpac = train_model.pd.neglogp(A)
-        entropy = tf.reduce_mean(train_model.pd.entropy())
+        if isinstance(train_model.pdtype, dict):
+            neglogpac = train_model.neglogp(A)
+            entropy = tf.reduce_mean(train_model.entropy())
+        else:
+            neglogpac = train_model.pd.neglogp(A)
+            entropy = tf.reduce_mean(train_model.pd.entropy())
 
         vpred = train_model.vf
         vpredclipped = OLDVPRED + tf.clip_by_value(train_model.vf - OLDVPRED, - CLIPRANGE, CLIPRANGE)
@@ -54,8 +62,17 @@ class Model(object):
         def train(lr, cliprange, obs, returns, masks, actions, values, neglogpacs, states=None):
             advs = returns - values
             advs = (advs - advs.mean()) / (advs.std() + 1e-8)
-            td_map = {train_model.X:obs, A:actions, ADV:advs, R:returns, LR:lr,
-                    CLIPRANGE:cliprange, OLDNEGLOGPAC:neglogpacs, OLDVPRED:values}
+            td_map = {ADV:advs, R:returns, LR:lr, CLIPRANGE:cliprange, OLDNEGLOGPAC:neglogpacs, OLDVPRED:values}
+            if isinstance(train_model.X, dict):
+                for k in train_model.X:
+                    td_map[train_model.X[k]] = obs[k]
+            else:
+                td_map[train_model.X] = obs
+            if isinstance(A, dict):
+                for k in A:
+                    td_map[A[k]] = actions[k]
+            else:
+                td_map[A] = actions
             if states is not None:
                 td_map[train_model.S] = states
                 td_map[train_model.M] = masks
@@ -70,7 +87,12 @@ class Model(object):
             # Save RMS
             for rms in (ob_rms, ret_rms):
                 if rms is not None:
-                    ps += [rms.mean, rms.var, rms.count]
+                    if isinstance(rms, dict):
+                        for k in sorted(rms):
+                            if isinstance(rms[k], RunningMeanStd):
+                                ps += [rms[k].mean, rms[k].var, rms[k].count]
+                    else:
+                        ps += [rms.mean, rms.var, rms.count]
                 else:
                     ps += [None, None, None]
             joblib.dump(ps, save_path)
@@ -78,16 +100,37 @@ class Model(object):
         def load(load_path):
             loaded_params = joblib.load(load_path)
             restores = []
-            for p, loaded_p in zip(params, loaded_params[:-6]):
+            for p, loaded_p in zip(params, loaded_params[:len(params)]):
                 restores.append(p.assign(loaded_p))
             sess.run(restores)
             # If you want to load weights, also save/load observation scaling inside VecNormalize
             # Load RMS
-            for i, rms in enumerate((ob_rms, ret_rms)):
+            idx = len(params)
+            for rms in (ob_rms, ret_rms):
                 if rms is not None:
-                    rms.mean = loaded_params[i*3-6]
-                    rms.var = loaded_params[i*3-5]
-                    rms.count = loaded_params[i*3-4]
+                    if isinstance(rms, dict):
+                        for k in sorted(rms):
+                            if isinstance(rms[k], RunningMeanStd):
+                                rms[k].mean, rms[k].var, rms[k].count = loaded_params[idx:idx+3]
+                                idx += 3
+                    else:
+                        rms.mean, rms.var, rms.count = loaded_params[idx:idx+3]
+                        idx += 3
+
+        def load_sub_mlps(load_paths):
+            from baselines.ppo2.policies import HierarchicalMlpPolicy
+            assert policy is HierarchicalMlpPolicy
+            for k in load_paths:
+                params = tf.trainable_variables('model/' + k)
+                loaded_params = joblib.load(load_paths[k])
+                restores = []
+                for p, loaded_p in zip(params, loaded_params[:4] + loaded_params[10:13]):
+                    restores.append(p.assign(loaded_p))
+                sess.run(restores)
+                # Load RMS
+                ob_rms[k].mean = loaded_params[13]
+                ob_rms[k].var = loaded_params[14]
+                ob_rms[k].count = loaded_params[15]
 
         self.train = train
         self.train_model = train_model
@@ -97,6 +140,7 @@ class Model(object):
         self.initial_state = act_model.initial_state
         self.save = save
         self.load = load
+        self.load_sub_mlps = load_sub_mlps
         tf.global_variables_initializer().run(session=sess) #pylint: disable=E1101
 
 class Runner(AbstractEnvRunner):
@@ -107,25 +151,57 @@ class Runner(AbstractEnvRunner):
         self.gamma = gamma
 
     def run(self):
-        mb_obs, mb_rewards, mb_actions, mb_values, mb_dones, mb_neglogpacs = [],[],[],[],[],[]
+        mb_obs = {k: [] for k in self.obs} if isinstance(self.obs, dict) else []
+        mb_actions = {k: [] for k in self.model.train_model.adtypes} if isinstance(self.model.train_model.pdtype, dict) else []
+        mb_rewards, mb_values, mb_dones, mb_neglogpacs = [],[],[],[]
         mb_states = self.states
         epinfos = []
-        for _ in range(self.nsteps):
-            actions, values, self.states, neglogpacs = self.model.step(self.obs, self.states, self.dones)
-            mb_obs.append(self.obs.copy())
-            mb_actions.append(actions)
-            mb_values.append(values)
-            mb_neglogpacs.append(neglogpacs)
-            mb_dones.append(self.dones)
-            self.obs[:], rewards, self.dones, infos = self.env.step(actions)
-            for info in infos:
-                maybeepinfo = info.get('episode')
-                if maybeepinfo: epinfos.append(maybeepinfo)
-            mb_rewards.append(rewards)
+        while True:
+            if isinstance(self.model.train_model.pdtype, dict):
+                actions, values, self.states, neglogpacs, aenvs = self.model.step(self.obs, self.states, self.dones)
+            else:
+                actions, values, self.states, neglogpacs = self.model.step(self.obs, self.states, self.dones)
+            if not isinstance(self.model.train_model.pdtype, dict) or self.obs['switch'] == -1:
+                if isinstance(self.obs, dict):
+                    for k in mb_obs:
+                        mb_obs[k].append(self.obs[k].copy())
+                else:
+                    mb_obs.append(self.obs.copy())
+                if isinstance(self.model.train_model.pdtype, dict):
+                    for k in mb_actions:
+                        mb_actions[k].append(actions[k])
+                else:
+                    mb_actions.append(actions)
+                mb_values.append(values)
+                mb_neglogpacs.append(neglogpacs)
+                mb_dones.append(self.dones)
+            if isinstance(self.model.train_model.pdtype, dict):
+                obs, rewards, self.dones, infos = self.env.step([s for s in zip(*aenvs)])
+            else:
+                obs, rewards, self.dones, infos = self.env.step(actions)
+            if isinstance(self.obs, dict):
+                for k in self.obs:
+                    self.obs[k][:] = obs[k]
+            else:
+                self.obs[:] = obs
+            if not isinstance(self.model.train_model.pdtype, dict) or self.obs['switch'] == -1:
+                for info in infos:
+                    maybeepinfo = info.get('episode')
+                    if maybeepinfo: epinfos.append(maybeepinfo)
+            if not isinstance(self.model.train_model.pdtype, dict) or self.obs['switch'] == -1:
+                mb_rewards.append(rewards)
+            if len(mb_rewards) == self.nsteps:
+                break
         #batch of steps to batch of rollouts
-        mb_obs = np.asarray(mb_obs, dtype=self.obs.dtype)
+        if isinstance(self.obs, dict):
+            mb_obs = {k: np.asarray(mb_obs[k], dtype=self.obs[k].dtype) for k in mb_obs}
+        else:
+            mb_obs = np.asarray(mb_obs, dtype=self.obs.dtype)
         mb_rewards = np.asarray(mb_rewards, dtype=np.float32)
-        mb_actions = np.asarray(mb_actions)
+        if isinstance(self.model.train_model.pdtype, dict):
+            mb_actions = {k: np.asarray(mb_actions[k], dtype=self.model.train_model.adtypes[k]) for k in mb_actions}
+        else:
+            mb_actions = np.asarray(mb_actions)
         mb_values = np.asarray(mb_values, dtype=np.float32)
         mb_neglogpacs = np.asarray(mb_neglogpacs, dtype=np.float32)
         mb_dones = np.asarray(mb_dones, dtype=np.bool)
@@ -151,8 +227,11 @@ def sf01(arr):
     """
     swap and then flatten axes 0 and 1
     """
-    s = arr.shape
-    return arr.swapaxes(0, 1).reshape(s[0] * s[1], *s[2:])
+    if isinstance(arr, dict):
+        return {k: v.swapaxes(0, 1).reshape(v.shape[0] * v.shape[1], *v.shape[2:]) for k, v in arr.items()}
+    else:
+        s = arr.shape
+        return arr.swapaxes(0, 1).reshape(s[0] * s[1], *s[2:])
 
 def constfn(val):
     def f(_):
@@ -162,7 +241,7 @@ def constfn(val):
 def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
             vf_coef=0.5,  max_grad_norm=0.5, gamma=0.99, lam=0.95,
             log_interval=10, nminibatches=4, noptepochs=4, cliprange=0.2,
-            save_interval=0, load_path=None):
+            save_interval=0, load_path=None, load_sub_paths=None):
 
     if isinstance(lr, float): lr = constfn(lr)
     else: assert callable(lr)
@@ -192,6 +271,8 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
     model = make_model()
     if load_path is not None:
         model.load(load_path)
+    if load_sub_paths is not None:
+        model.load_sub_mlps(load_sub_paths)
     runner = Runner(env=env, model=model, nsteps=nsteps, gamma=gamma, lam=lam)
 
     epinfobuf = deque(maxlen=100)
@@ -220,7 +301,12 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
                 for start in range(0, nbatch, nbatch_train):
                     end = start + nbatch_train
                     mbinds = inds[start:end]
-                    slices = (arr[mbinds] for arr in (obs, returns, masks, actions, values, neglogpacs))
+                    def _slice(arr, mbinds):
+                        if isinstance(arr, dict):
+                            return {k: v[mbinds] for k, v in arr.items()}
+                        else:
+                            return arr[mbinds]
+                    slices = (_slice(arr, mbinds) for arr in (obs, returns, masks, actions, values, neglogpacs))
                     mblossvals.append(model.train(lrnow, cliprangenow, *slices))
         else: # recurrent version
             assert nenvs % nminibatches == 0
