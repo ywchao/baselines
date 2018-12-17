@@ -18,11 +18,13 @@ _SUBJECT_ID = {
     'walk': 8,
     'turn': 69,
     'sit': 143,
+    'holistic': 13,
 }
 _SUBJECT_AMC_ID = {
     'walk': [1,2,3,4,5,6,7,8,9,10,11],
     'turn': [13],
     'sit': [18],
+    'holistic': [2],
 }
 
 # Since this is a heuristic algorithm, we need to manually clean up the output
@@ -39,6 +41,7 @@ _DEL_LIST = {
 # Manual segmentations
 _L_TURN = np.array([[0,  213,  88], [0,  726,  79], [0, 1234,  87], [0, 1784,  96]], dtype=np.int64)
 _R_TURN = np.array([[0,  444, 101], [0,  948, 109], [0, 1504,  97], [0, 2055, 110]], dtype=np.int64)
+_HOLIST = np.array([[0,  0,  354]], dtype=np.int64)
 
 
 def argsparser():
@@ -161,7 +164,7 @@ def collect_obs(env, qpos, task='walk'):
     obs = []
     if task == "walk":
         aux = {'rfoot_z': [], 'lfoot_z': []}
-    if task == "turn":
+    if task in ("turn", "holistic"):
         aux = {}
     if task == "sit":
         aux = {'pelvis_z': [], 'foot_z': [], 'foot_x': []}
@@ -304,7 +307,7 @@ def main(args):
 
     assert args.retarget_path is not None
 
-    for task in ("walk", "turn", "sit"):
+    for task in ("walk", "turn", "sit", "holistic"):
         data = {'qpos': [], 'obs': []}
         if task == "walk":
             data['rstep'] = np.empty([0, 3], dtype=np.int64)
@@ -316,6 +319,8 @@ def main(args):
             data['sitd'] = np.empty([0, 3], dtype=np.int64)
             data['offsetz'] = []
             data['offsetx'] = []
+        if task == "holistic":
+            data['holist'] = _HOLIST
 
         for ind, i in enumerate(_SUBJECT_AMC_ID[task]):
             file_path = os.path.join(

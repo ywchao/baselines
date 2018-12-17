@@ -23,6 +23,13 @@ python motion_retarget/retarget_cmu.py \
   --src_bvh data/cmu_mocap_bvh/143/143_18.bvh \
   --out_bvh data/cmu_mocap_bvh_retarget/143/143_18.bvh
 
+# holistic
+echo "processing 13/13_02.bvh ... "
+
+python motion_retarget/retarget_cmu.py \
+  --src_bvh data/cmu_mocap_bvh/13/13_02.bvh \
+  --out_bvh data/cmu_mocap_bvh_retarget/13/13_02.bvh
+
 
 python motion_retarget/collect_cmu.py
 

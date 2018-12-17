@@ -10,17 +10,20 @@ _SUBJECT_ID = {
     'walk': 8,
     'turn': 69,
     'sit': 143,
+    'holistic': 13,
 }
 _SUBJECT_AMC_ID = {
     'walk': [1,2,3,4,5,6,7,8,9,10,11],
     'turn': [13],
     'sit': [18],
+    'holistic': [2],
 }
 
 _SEG_KEYS = {
     'walk': ("rstep", "lstep"),
     'turn': ("rturn", "lturn"),
     'sit': ("sitd",),
+    'holistic': ("holist",),
 }
 
 
@@ -44,7 +47,7 @@ def main(args):
         figsize=(env.env.VIDEO_W/100, env.env.VIDEO_H/100))
     fig.subplots_adjust(left=0, right=1, bottom=0, top=1)
 
-    for task in ("walk", "turn", "sit"):
+    for task in ("walk", "turn", "sit", "holistic"):
         data = np.load('data/cmu_mocap_{}.npz'.format(task))
         assert len(data['qpos']) == len(_SUBJECT_AMC_ID[task])
 
