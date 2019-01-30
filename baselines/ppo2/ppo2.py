@@ -124,13 +124,24 @@ class Model(object):
                 params = tf.trainable_variables('model/' + k)
                 loaded_params = joblib.load(load_paths[k])
                 restores = []
-                for p, loaded_p in zip(params, loaded_params[:4] + loaded_params[10:13]):
-                    restores.append(p.assign(loaded_p))
+                if k == "meta":
+                    # Tested only on loading HighLevel-Walk models to HighLevel-Full.
+                    # Can potentially work on loading HighLevel-Walk models to HighLevel-Walk.
+                    # Assumes there is one and only one subtask (e.g. walk) that requires a^target.
+                    assert len(train_model.pd['meta']) == 2
+                    for i, (p, loaded_p) in enumerate(zip(params[:15], loaded_params[:15])):
+                        if i < 10 or p.shape.as_list() == list(loaded_p.shape):
+                            restores.append(p.assign(loaded_p))
+                    idx = (22, 23, 24)
+                else:
+                    for p, loaded_p in zip(params, loaded_params[:4] + loaded_params[10:13]):
+                        restores.append(p.assign(loaded_p))
+                    idx = (13, 14, 15)
                 sess.run(restores)
                 # Load RMS
-                ob_rms[k].mean = loaded_params[13]
-                ob_rms[k].var = loaded_params[14]
-                ob_rms[k].count = loaded_params[15]
+                ob_rms[k].mean = loaded_params[idx[0]]
+                ob_rms[k].var = loaded_params[idx[1]]
+                ob_rms[k].count = loaded_params[idx[2]]
 
         self.train = train
         self.train_model = train_model
